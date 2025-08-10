@@ -5,19 +5,27 @@ __pycache__/
 *.egg-info/
 venv/
 .venv/
+*.pytest_cache/
+.mypy_cache/
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+npm-debug.log*
+yarn-error.log*
 
 # Env
 .env
 
 # OS
 .DS_Store
+.vscode/
+.idea/
 
 # Docker
 pgdata/
+*.log
+docker-compose.override.yml
 
 
