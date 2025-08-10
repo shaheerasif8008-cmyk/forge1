@@ -9,18 +9,13 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-select = [
-    "E",
-    "F",
-    "I",
-    "UP",
-    "N",
-    "BLE",
-    "B",
-]
-ignore = ["E501"]
 
-[tool.ruff.isort]
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "N", "BLE", "B"]
+ignore = ["E501"]
+exclude = ["alembic/*"]
+
+[tool.ruff.lint.isort]
 known-first-party = ["app"]
 
 [tool.mypy]
