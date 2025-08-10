@@ -21,3 +21,12 @@ Minimal monorepo for Forge 1 Lite MVP.
 - `make fmt` – format code
 - `make lint` – lint code
 - `make test` – run tests
+
+## Pre-commit hooks
+Install and enable hooks to lint/format on commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
