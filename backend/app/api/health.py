@@ -17,7 +17,9 @@ async def live() -> dict[str, str]:
 
 
 @router.get("/ready")
-async def ready(response: Response, db: Session = Depends(get_session)) -> dict[str, Any]:  # noqa: B008
+async def ready(
+    response: Response, db: Session = Depends(get_session)  # noqa: B008
+) -> dict[str, Any]:
     db_ok = False
     redis_ok = False
 
@@ -40,3 +42,19 @@ async def ready(response: Response, db: Session = Depends(get_session)) -> dict[
     return {"status": "ready"}
 
 
+@router.get("/")
+async def health(db: Session = Depends(get_session)) -> dict[str, Any]:  # noqa: B008
+    """Health check endpoint that matches frontend expectations."""
+    postgres_ok = True
+    redis_ok = True
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:  # noqa: BLE001
+        postgres_ok = False
+    try:
+        client: Any = Redis.from_url(settings.redis_url, decode_responses=True)
+        redis_ok = bool(client.ping())
+        client.close()
+    except Exception:  # noqa: BLE001
+        redis_ok = False
+    return {"status": "healthy" if (postgres_ok and redis_ok) else "unhealthy", "postgres": postgres_ok, "redis": redis_ok}

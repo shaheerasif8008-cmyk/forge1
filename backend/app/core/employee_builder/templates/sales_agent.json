@@ -1,0 +1,21 @@
+{
+  "role": {
+    "description": "Handles lead outreach, qualification, and scheduling demos with prospects."
+  },
+  "required_tools": [
+    { "name": "api_caller", "config": { "auth": "oauth2" } },
+    { "name": "web_scraper", "config": { "max_depth": 2 } },
+    { "name": "doc_summarizer", "config": {} }
+  ],
+  "rag": {
+    "enabled": true,
+    "top_k": 6,
+    "provider": "haystack"
+  },
+  "memory": {
+    "short_term": { "provider": "redis", "ttl": 1800 },
+    "long_term": { "provider": "pgvector", "dimensions": 1536 }
+  }
+}
+
+

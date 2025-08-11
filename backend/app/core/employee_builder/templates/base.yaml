@@ -1,0 +1,12 @@
+rag:
+  enabled: true
+  top_k: 5
+  provider: hybrid  # haystack+llamaindex
+memory:
+  short_term:
+    provider: redis
+    ttl: 3600
+  long_term:
+    provider: pgvector
+    dimensions: 1536
+

@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..core.config import settings
+from .models import Base
 
 
 def _make_engine_url() -> str:
@@ -25,8 +26,12 @@ engine = create_engine(_make_engine_url(), pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 
+# Create tables if they don't exist
+def create_tables() -> None:
+    """Create all tables defined in models."""
+    Base.metadata.create_all(bind=engine)
+
+
 def get_session() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session
-
-

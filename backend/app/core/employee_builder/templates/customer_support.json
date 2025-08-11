@@ -1,0 +1,21 @@
+{
+  "role": {
+    "description": "Resolves customer issues, drafts replies, and escalates complex cases with summaries."
+  },
+  "required_tools": [
+    { "name": "api_caller", "config": { "retry": 2 } },
+    { "name": "doc_summarizer", "config": {} },
+    { "name": "file_parser", "config": { "formats": ["pdf", "csv"] } }
+  ],
+  "rag": {
+    "enabled": true,
+    "top_k": 5,
+    "provider": "hybrid"
+  },
+  "memory": {
+    "short_term": { "provider": "redis", "ttl": 900 },
+    "long_term": { "provider": "pgvector", "dimensions": 1536 }
+  }
+}
+
+

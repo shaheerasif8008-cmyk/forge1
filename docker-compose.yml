@@ -17,7 +17,7 @@ services:
       redis:
         condition: service_started
   postgres:
-    image: postgres:16
+    image: ankane/pgvector:latest
     container_name: forge-postgres
     environment:
       - POSTGRES_USER=forge

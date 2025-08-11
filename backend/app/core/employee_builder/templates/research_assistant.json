@@ -1,0 +1,22 @@
+{
+  "role": {
+    "description": "Conducts literature reviews, aggregates sources, and produces concise research briefs."
+  },
+  "required_tools": [
+    { "name": "web_scraper", "config": { "respect_robots": true } },
+    { "name": "data_analyzer", "config": { "libs": ["pandas"] } },
+    { "name": "doc_summarizer", "config": { "max_tokens": 512 } },
+    { "name": "keyword_extractor", "config": {} }
+  ],
+  "rag": {
+    "enabled": true,
+    "top_k": 8,
+    "provider": "llamaindex"
+  },
+  "memory": {
+    "short_term": { "provider": "redis", "ttl": 3600 },
+    "long_term": { "provider": "pgvector", "dimensions": 1536 }
+  }
+}
+
+
