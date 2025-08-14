@@ -5,6 +5,7 @@ import random
 from typing import Any, Iterable, Optional
 
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
@@ -32,7 +33,13 @@ class ThompsonRouter:
 
     def _load_scorecards(self) -> dict[str, ModelScorecard]:
         key = self._redis_key()
-        entries = self._redis.hgetall(key) or {}
+        entries: dict[str, str] = {}
+        try:
+            entries = self._redis.hgetall(key) or {}
+        except RedisConnectionError:
+            entries = {}
+        except Exception:
+            entries = {}
         sc: dict[str, ModelScorecard] = {}
         if entries:
             for model_name, payload in entries.items():
@@ -53,54 +60,62 @@ class ThompsonRouter:
                 except Exception:
                     continue
             return sc
-        # Fallback to Postgres hydration
-        with SessionLocal() as db:
-            try:
-                RouterMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-            except Exception:
-                pass
-            rows = (
-                db.query(RouterMetric)
-                .filter(RouterMetric.tenant_id == self.tenant_id, RouterMetric.task_type == self.task_type)
-                .all()
-            )
-            for r in rows:
-                m = ModelScorecard.empty(r.model_name)
-                m.trials = int(r.trials or 0)
-                m.successes = int(r.successes or 0)
-                m.success_posterior.alpha = float(r.alpha or 1)
-                m.success_posterior.beta = float(r.beta or 1)
-                # approximate with available p95/mean for hot start
-                if r.latency_mu is not None:
-                    m.latency_stats.count = max(1, int(r.trials or 1))
-                    m.latency_stats.mean = float(r.latency_mu)
-                if r.cost_mu is not None:
-                    m.cost_stats.count = max(1, int(r.trials or 1))
-                    m.cost_stats.mean = float(r.cost_mu)
-                sc[r.model_name] = m
-            return sc
+        # Fallback to Postgres hydration (best-effort; tolerate missing DB)
+        try:
+            with SessionLocal() as db:
+                try:
+                    RouterMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
+                except Exception:
+                    pass
+                rows = (
+                    db.query(RouterMetric)
+                    .filter(RouterMetric.tenant_id == self.tenant_id, RouterMetric.task_type == self.task_type)
+                    .all()
+                )
+                for r in rows:
+                    m = ModelScorecard.empty(r.model_name)
+                    m.trials = int(r.trials or 0)
+                    m.successes = int(r.successes or 0)
+                    m.success_posterior.alpha = float(r.alpha or 1)
+                    m.success_posterior.beta = float(r.beta or 1)
+                    # approximate with available p95/mean for hot start
+                    if r.latency_mu is not None:
+                        m.latency_stats.count = max(1, int(r.trials or 1))
+                        m.latency_stats.mean = float(r.latency_mu)
+                    if r.cost_mu is not None:
+                        m.cost_stats.count = max(1, int(r.trials or 1))
+                        m.cost_stats.mean = float(r.cost_mu)
+                    sc[r.model_name] = m
+        except Exception:
+            # Database not available; return empty hydration
+            return {}
+        return sc
 
     def _persist_hot(self, sc: dict[str, ModelScorecard]) -> None:
         key = self._redis_key()
-        pipe = self._redis.pipeline()
-        for name, m in sc.items():
-            payload = json.dumps(
-                {
-                    "trials": m.trials,
-                    "successes": m.successes,
-                    "alpha": m.success_posterior.alpha,
-                    "beta": m.success_posterior.beta,
-                    "lat_n": m.latency_stats.count,
-                    "lat_mu": m.latency_stats.mean,
-                    "lat_m2": m.latency_stats.m2,
-                    "c_n": m.cost_stats.count,
-                    "c_mu": m.cost_stats.mean,
-                    "c_m2": m.cost_stats.m2,
-                }
-            )
-            pipe.hset(key, name, payload)
-        pipe.expire(key, 3600)
-        pipe.execute()
+        try:
+            pipe = self._redis.pipeline()
+            for name, m in sc.items():
+                payload = json.dumps(
+                    {
+                        "trials": m.trials,
+                        "successes": m.successes,
+                        "alpha": m.success_posterior.alpha,
+                        "beta": m.success_posterior.beta,
+                        "lat_n": m.latency_stats.count,
+                        "lat_mu": m.latency_stats.mean,
+                        "lat_m2": m.latency_stats.m2,
+                        "c_n": m.cost_stats.count,
+                        "c_mu": m.cost_stats.mean,
+                        "c_m2": m.cost_stats.m2,
+                    }
+                )
+                pipe.hset(key, name, payload)
+            pipe.expire(key, 3600)
+            pipe.execute()
+        except Exception:
+            # If Redis unavailable, skip hot persist
+            pass
 
     def route(self, *, models: Iterable[str], policy: RouterPolicy) -> dict[str, Any]:
         scorecards = self._load_scorecards()

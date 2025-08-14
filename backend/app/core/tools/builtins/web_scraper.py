@@ -17,6 +17,7 @@ from ...logging_config import get_trace_id
 from ...telemetry.metrics_service import MetricsService
 from ....db.session import SessionLocal
 from ...quality.guards import check_and_reserve_tokens
+from ...config import settings
 
 logger = logging.getLogger(__name__)
 
