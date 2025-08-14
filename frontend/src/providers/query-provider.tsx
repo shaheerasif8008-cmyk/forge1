@@ -15,9 +15,9 @@ export function QueryProvider({ children }: QueryProviderProps) {
         defaultOptions: {
           queries: {
             staleTime: 60 * 1000, // 1 minute
-            retry: (failureCount, error: any) => {
+            retry: (failureCount: number, error: Error) => {
               // Don't retry on 4xx errors
-              if (error?.status >= 400 && error?.status < 500) {
+              if ('status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
                 return false;
               }
               return failureCount < 3;
