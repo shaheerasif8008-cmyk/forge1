@@ -17,6 +17,7 @@ from ...logging_config import get_trace_id
 from ...telemetry.metrics_service import MetricsService
 from ....db.session import SessionLocal
 from ...quality.guards import check_and_reserve_tokens
+from ....core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +48,26 @@ class WebScraper(BaseTool):
         parsed = urlparse(url)
         host = parsed.hostname or ""
         try:
+            # Add DNS timeout to prevent hanging
+            socket.setdefaulttimeout(5.0)
             addr_info = socket.getaddrinfo(host, None)
+            socket.setdefaulttimeout(None)  # Reset to default
         except Exception as e:  # noqa: BLE001
+            socket.setdefaulttimeout(None)  # Ensure timeout is reset
             raise ValueError("Unable to resolve host for SSRF checks") from e
         for _, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
             try:
                 ip = ipaddress.ip_address(ip_str)
-                # Block private/loopback/link-local and IPv6 ULA
-                if ip.is_private or ip.is_loopback or ip.is_link_local or (
-                    ip.version == 6 and ip.is_private
-                ):
+                # Block private/loopback/link-local
+                if ip.is_private or ip.is_loopback or ip.is_link_local:
                     raise ValueError("Blocked private address")
+                # Block IPv6 ULA (fc00::/7) - Unique Local Addresses
+                if ip.version == 6:
+                    if isinstance(ip, ipaddress.IPv6Address):
+                        # fc00::/7 includes fc00:: to fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+                        if ip.packed[0] & 0xfe == 0xfc:
+                            raise ValueError("Blocked IPv6 ULA address")
             except ValueError:
                 continue
         # Ensure BeautifulSoup is available
