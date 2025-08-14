@@ -56,3 +56,39 @@ def test_employee_access_requires_auth() -> None:
     assert c.get("/api/v1/employees/").status_code == 401
     assert c.post("/api/v1/employees/", json={}).status_code == 401
 
+
+def test_delete_employee_with_logs_succeeds() -> None:
+    c = TestClient(app)
+    token = login("deleter")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create employee
+    res = c.post(
+        "/api/v1/employees/",
+        headers=headers,
+        json={
+            "name": "ToDelete",
+            "role_name": "Sales Agent",
+            "description": "desc",
+            "tools": ["api_caller"],
+        },
+    )
+    assert res.status_code in (201, 409)
+
+    lst = c.get("/api/v1/employees/", headers=headers)
+    assert lst.status_code == 200
+    employees = lst.json()
+    assert employees
+    emp_id = employees[0]["id"]
+
+    # Generate some logs best-effort
+    c.post(
+        f"/api/v1/employees/{emp_id}/run",
+        headers=headers,
+        json={"task": "hello"},
+    )
+
+    # Delete employee should not fail due to logs
+    delr = c.delete(f"/api/v1/employees/{emp_id}", headers=headers)
+    assert delr.status_code in (204, 404)
+

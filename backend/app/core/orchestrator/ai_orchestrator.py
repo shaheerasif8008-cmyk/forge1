@@ -1,10 +1,28 @@
-"""AI Orchestrator for Forge 1 - Core orchestration engine."""
+"""AI Orchestrator for Forge 1 - Core orchestration engine.
+
+Structured logging is used throughout. A request-scoped trace ID set in
+`app.core.logging_config` will be automatically included in log entries.
+"""
 
 import logging
 from enum import Enum
 from typing import Any, Protocol
+import os
+import time
 
 from pydantic import BaseModel, Field
+from ..logging_config import get_trace_id
+from ..telemetry.metrics_service import MetricsService, TaskMetrics
+from ..telemetry.error_inspector import capture_error_snapshot
+from ...router.runtime import ThompsonRouter
+from ...router.policy import RouterPolicy
+from ...ledger.sdk import post as ledger_post
+from ...db.session import SessionLocal
+from ..quality.feedback_loop import score_task, should_retry, next_fix_plan
+from ...db.session import get_session
+from ...db.models import TaskReview
+from ..logging_config import get_trace_id
+from ...interconnect import get_interconnect
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -70,6 +88,7 @@ class AdapterRegistry:
     def __init__(self) -> None:
         self._adapters: dict[str, LLMAdapter] = {}
         self._capability_map: dict[TaskType, list[str]] = {}
+        self._cb_states: dict[str, dict[str, Any]] = {}
 
     def register(self, adapter: LLMAdapter) -> None:
         """Register an LLM adapter."""
@@ -91,6 +110,37 @@ class AdapterRegistry:
     def get_adapter(self, model_name: str) -> LLMAdapter | None:
         """Get adapter by model name."""
         return self._adapters.get(model_name)
+
+    def run_with_circuit_breaker(self, model_name: str, call: callable) -> Any:  # type: ignore[override]
+        from ..config import settings
+
+        state = self._cb_states.setdefault(
+            model_name,
+            {
+                "state": "CLOSED",
+                "failures": 0,
+                "last_trip": 0.0,
+                "threshold": int(getattr(settings, "circuit_breaker_threshold", 3)),
+                "cooldown": int(getattr(settings, "circuit_breaker_cooldown_secs", 60)),
+            },
+        )
+        now = time.time()
+        if state["state"] == "OPEN" and now - state["last_trip"] > state["cooldown"]:
+            state["state"] = "HALF_OPEN"
+        if state["state"] == "OPEN":
+            raise RuntimeError("LLM circuit open; please retry later")
+        try:
+            result = call()
+            state["failures"] = 0
+            if state["state"] == "HALF_OPEN":
+                state["state"] = "CLOSED"
+            return result
+        except Exception:
+            state["failures"] += 1
+            if state["state"] == "HALF_OPEN" or state["failures"] >= state["threshold"]:
+                state["state"] = "OPEN"
+                state["last_trip"] = now
+            raise
 
     def list_adapters(self) -> list[str]:
         """List all registered adapter names."""
@@ -114,7 +164,9 @@ class ModelRouter:
         # Simple selection logic - can be enhanced with cost, performance metrics
         # For now, return the first available adapter
         selected = available_adapters[0]
-        logger.info(f"Selected model {selected.model_name} for task type {task_type}")
+        logger.info(
+            f"Selected model {selected.model_name} for task type {task_type}",
+        )
         return selected
 
 
@@ -131,6 +183,8 @@ class AIOrchestrator:
         self.router = ModelRouter(self.registry)
         self.logger = logging.getLogger(__name__)
         self.rag_engine = rag_engine
+        # Circuit breaker states per adapter
+        self._cb_states: dict[str, dict[str, Any]] = {}
 
         # Optional employee-driven configuration
         self.employee_config: dict[str, Any] | None = None
@@ -148,42 +202,47 @@ class AIOrchestrator:
     def _setup_default_adapters(self) -> None:
         """Setup default adapters automatically."""
         try:
-            # Import and register OpenAI adapter if API key is available
+            # Prefer OpenRouter universal adapter when OPENROUTER_API_KEY is present
+            try:
+                from .adapter_openrouter import OpenRouterAdapter
+                openrouter = OpenRouterAdapter()
+                self.register_adapter(openrouter)
+                self.logger.info("OpenRouter adapter registered successfully")
+            except (ImportError, ValueError, RuntimeError) as e:
+                self.logger.warning(f"OpenRouter unavailable: {e}")
+
+            # Register provider-specific adapters only if directly requested/keys available
             try:
                 from .adapter_openai import create_openai_adapter
-
-                # Create and register adapter
                 openai_adapter = create_openai_adapter()
                 self.register_adapter(openai_adapter)
                 self.logger.info("OpenAI adapter registered successfully")
             except (ImportError, ValueError, RuntimeError) as e:
-                self.logger.warning(f"Could not register OpenAI adapter: {e}")
+                self.logger.info(f"OpenAI adapter not enabled: {e}")
 
-            # Import and register Claude adapter if API key is available
             try:
                 from .adapter_claude import create_claude_adapter
-
                 claude_adapter = create_claude_adapter()
                 self.register_adapter(claude_adapter)
                 self.logger.info("Claude adapter registered successfully")
             except (ImportError, ValueError, RuntimeError) as e:
-                self.logger.warning(f"Could not register Claude adapter: {e}")
+                self.logger.info(f"Claude adapter not enabled: {e}")
 
-            # Import and register Gemini adapter if API key is available
             try:
                 from .adapter_gemini import create_gemini_adapter
-
                 gemini_adapter = create_gemini_adapter()
                 self.register_adapter(gemini_adapter)
                 self.logger.info("Gemini adapter registered successfully")
             except (ImportError, ValueError, RuntimeError) as e:
-                self.logger.warning(f"Could not register Gemini adapter: {e}")
+                self.logger.info(f"Gemini adapter not enabled: {e}")
 
         except (ImportError, ValueError, RuntimeError) as e:
             self.logger.error(f"Error setting up default adapters: {e}")
 
         registered_count = len(self.registry.list_adapters())
-        self.logger.info(f"AI Orchestrator initialized with {registered_count} adapters")
+        self.logger.info(
+            f"AI Orchestrator initialized with {registered_count} adapters",
+        )
 
     # New employee-driven configuration flow
     def configure_from_employee(self, employee_config: dict[str, Any]) -> None:
@@ -247,12 +306,32 @@ class AIOrchestrator:
 
         start_time = time.time()
         task_context = TaskContext(**(context or {}))
+        trace_id = get_trace_id() or str(context.get("trace_id")) if context else None
 
         try:
-            self.logger.info(f"Starting task execution: {task[:100]}...")
+            self.logger.info(
+                f"Starting task execution",
+            )
 
             # Route to appropriate model
-            selected_model = self.router.select_model(task_context.task_type, task_context)
+            # Router: if enabled via employee config or tenant policy, use Thompson Sampling
+            use_router = bool((self.employee_config or {}).get("router", {}).get("enabled", False))
+            selected_model = None
+            selected_model_name = None
+            if use_router:
+                tenant_id = str((context or {}).get("tenant_id", ""))
+                task_type_name = task_context.task_type
+                router = ThompsonRouter(tenant_id or "default", str(task_type_name))
+                policy_cfg = (self.employee_config or {}).get("router", {}).get("policy", {})
+                policy = RouterPolicy.from_dict(policy_cfg)
+                model_names = [a.model_name for a in self.registry.get_adapters_for_task(task_context.task_type)]
+                choice = router.route(models=model_names, policy=policy)
+                selected_model_name = choice.get("model")
+                if selected_model_name:
+                    selected_model = self.registry.get_adapter(selected_model_name)
+            if not selected_model:
+                selected_model = self.router.select_model(task_context.task_type, task_context)
+                selected_model_name = selected_model.model_name if selected_model else None
             if not selected_model:
                 return TaskResult(
                     success=False,
@@ -268,11 +347,15 @@ class AIOrchestrator:
             retrieved_docs: list[dict[str, Any]] = []
             if task_context.use_rag and self.rag_engine is not None:
                 try:
+                    self.logger.debug("RAG: starting retrieval")
                     retrieved_docs = self.rag_engine.query(
                         task, top_k=max(1, task_context.rag_top_k)
                     )
                     if retrieved_docs:
                         used_rag = True
+                        self.logger.info(
+                            f"RAG: retrieved {len(retrieved_docs)} documents",
+                        )
                         # Compose a brief context block
                         snippets: list[str] = []
                         for doc in retrieved_docs:
@@ -288,12 +371,45 @@ class AIOrchestrator:
                     # Log and continue without RAG
                     self.logger.warning(f"RAG retrieval failed: {e}")
 
-            # Execute task with possibly augmented prompt; merge RAG artifacts into context
+            # Execute task with possibly augmented prompt; trim context and enforce token budgets
             execution_context: dict[str, Any] = dict(context or {})
+            # Hard caps and defaults
+            max_tokens = int(execution_context.get("max_tokens", 2000))
+            if max_tokens > 32000:
+                max_tokens = 32000
+            execution_context["max_tokens"] = max_tokens
+            # Preflight estimate (very rough): scale with prompt length
+            estimated_tokens = max(1, min(32000, len(augmented_prompt) // 4))
+            execution_context["estimated_tokens"] = estimated_tokens
+            if trace_id and "trace_id" not in execution_context:
+                execution_context["trace_id"] = trace_id
             if used_rag:
                 execution_context["rag_used"] = True
                 execution_context["retrieved_docs"] = retrieved_docs
-            response = await selected_model.generate(augmented_prompt, execution_context)
+            # Simple circuit breaker inline to avoid nested loops issues
+            name = selected_model.model_name
+            threshold = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
+            cooldown = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECS", "60"))
+            state = self._cb_states.setdefault(
+                name,
+                {"state": "CLOSED", "failures": 0, "last_trip": 0.0, "threshold": threshold, "cooldown": cooldown},
+            )
+            now = time.time()
+            if state["state"] == "OPEN" and (now - state["last_trip"]) > state["cooldown"]:
+                state["state"] = "HALF_OPEN"
+            if state["state"] == "OPEN":
+                raise RuntimeError("LLM circuit open; please retry later")
+            try:
+                response = await selected_model.generate(augmented_prompt, execution_context)
+                state["failures"] = 0
+                if state["state"] == "HALF_OPEN":
+                    state["state"] = "CLOSED"
+            except Exception:
+                state["failures"] += 1
+                if state["state"] == "HALF_OPEN" or state["failures"] >= state["threshold"]:
+                    state["state"] = "OPEN"
+                    state["last_trip"] = now
+                raise
 
             # Extract text from response dict
             output = response.get("text", "")
@@ -301,37 +417,264 @@ class AIOrchestrator:
 
             execution_time = time.time() - start_time
             self.logger.info(
-                f"Task completed in {execution_time:.2f}s using {selected_model.model_name} (tokens: {tokens})"
+                f"Task completed in {execution_time:.2f}s using {selected_model.model_name}",
             )
 
-            return TaskResult(
+            result = TaskResult(
                 success=True,
                 output=output,
-                model_used=selected_model.model_name,
+                model_used=selected_model_name or selected_model.model_name,
                 execution_time=execution_time,
                 metadata={
                     "task_type": task_context.task_type.value,
                     "tokens_used": tokens,
+                    "estimated_tokens": estimated_tokens,
                     "rag_used": used_rag,
                     "retrieved_docs_count": len(retrieved_docs),
                 },
             )
+            # Ledger: record token and cost usage (nominal cost using token proxy)
+            try:
+                with SessionLocal() as db:
+                    token_amt = int(tokens or 0)
+                    cost_cents = int((tokens or 0) * 0.02)  # placeholder conversion
+                    if token_amt > 0:
+                        ledger_post(
+                            db,
+                            tenant_id=str((context or {}).get("tenant_id") or None),
+                            journal_name="model_usage",
+                            external_id=None,
+                            lines=[
+                                {"account_name": "llm_token_expense", "side": "debit", "commodity": "tokens", "amount": token_amt},
+                                {"account_name": "llm_token_pool", "side": "credit", "commodity": "tokens", "amount": token_amt},
+                            ],
+                        )
+                    if cost_cents > 0:
+                        ledger_post(
+                            db,
+                            tenant_id=str((context or {}).get("tenant_id") or None),
+                            journal_name="model_cost",
+                            external_id=None,
+                            lines=[
+                                {"account_name": "llm_cost_expense", "side": "debit", "commodity": "usd_cents", "amount": cost_cents},
+                                {"account_name": "cash", "side": "credit", "commodity": "usd_cents", "amount": cost_cents},
+                            ],
+                        )
+            except Exception:
+                pass
+            # Record router outcome
+            try:
+                if use_router and selected_model_name:
+                    tenant_id = str((context or {}).get("tenant_id", "")) or "default"
+                    router = ThompsonRouter(tenant_id, str(task_context.task_type))
+                    router.record_outcome(
+                        model_name=selected_model_name,
+                        success=True,
+                        latency_ms=execution_time * 1000.0,
+                        cost_cents=float(tokens or 0) * 0.0002,  # naive cost
+                    )
+            except Exception:
+                pass
+            # Persist routing telemetry
+            try:
+                from ...db.session import SessionLocal as _SL
+                from ...db.models import ModelRouteLog
+                with _SL() as _db:
+                    ModelRouteLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
+                    tenant_id = str((context or {}).get("tenant_id", "")) or None
+                    employee_id = str((context or {}).get("employee_id", "")) or None
+                    _db.add(
+                        ModelRouteLog(
+                            tenant_id=tenant_id,
+                            employee_id=employee_id,
+                            task_type=task_context.task_type.value,
+                            model_name=selected_model.model_name,
+                            success=True,
+                            latency_ms=int(execution_time * 1000),
+                        )
+                    )
+                    _db.commit()
+            except Exception:
+                pass
+            # Emit task.completed
+            try:
+                import asyncio as _asyncio
+                async def _emit():
+                    ic = await get_interconnect()
+                    await ic.publish(
+                        stream="events.tasks",
+                        type="task.completed",
+                        source="orchestrator",
+                        data={"tokens": tokens, "model": selected_model.model_name},
+                        trace_id=get_trace_id(),
+                    )
+                _asyncio.create_task(_emit())
+            except Exception:
+                pass
+            # Feedback loop: score and persist review
+            try:
+                s = score_task(result)
+                plan = next_fix_plan(s, None, context or {})
+                for session in get_session():
+                    db = session
+                    review = TaskReview(
+                        task_execution_id=None,  # can be backfilled if needed with proper linkage
+                        score=int(s * 100),
+                        status="scored",
+                        fix_plan=plan,
+                    )
+                    db.add(review)
+                    db.commit()
+                    break
+            except Exception:
+                pass
+            # Metrics: per-tenant/employee task counters and success ratio exposure
+            try:
+                tenant_id = str((context or {}).get("tenant_id", ""))
+                employee_id = str((context or {}).get("employee_id", "")) or None
+                ms = MetricsService()
+                ms.incr_task(
+                    TaskMetrics(
+                        tenant_id=tenant_id or "unknown",
+                        employee_id=employee_id,
+                        duration_ms=int(execution_time * 1000),
+                        tokens_used=int(tokens or 0),
+                        success=True,
+                    )
+                )
+                # Success ratio will be computed for gauges elsewhere from rollups; no direct set here
+            except Exception:
+                pass
+            return result
 
         except (RuntimeError, ValueError, TypeError) as e:
             execution_time = time.time() - start_time
-            self.logger.error(f"Task execution failed: {str(e)}")
+            self.logger.error("Task execution failed", exc_info=e)
 
-            return TaskResult(
+            # record metrics for failure
+            try:
+                tenant_id = str((context or {}).get("tenant_id", ""))
+                employee_id = str((context or {}).get("employee_id", "")) or None
+                ms = MetricsService()
+                ms.incr_task(
+                    TaskMetrics(
+                        tenant_id=tenant_id or "unknown",
+                        employee_id=employee_id,
+                        duration_ms=int(execution_time * 1000),
+                        tokens_used=int((context or {}).get("tokens_used", 0)),
+                        success=False,
+                    )
+                )
+            except Exception:
+                pass
+
+            # Feedback loop: score, decide retry/escalation, persist
+            try:
+                s = score_task({
+                    "success": False,
+                    "output": "",
+                    "error": str(e),
+                    "metadata": {"tokens_used": (context or {}).get("tokens_used", 0)},
+                })
+                plan = next_fix_plan(s, str(e), context or {})
+                status_label = "retry_planned" if should_retry(s, str(e)) else "escalated"
+                for session in get_session():
+                    db = session
+                    review = TaskReview(
+                        task_execution_id=None,
+                        score=int(s * 100),
+                        status=status_label,
+                        fix_plan=plan,
+                    )
+                    db.add(review)
+                    db.commit()
+                    break
+            except Exception:
+                pass
+
+            result = TaskResult(
                 success=False,
                 output="",
                 model_used="none",
                 execution_time=execution_time,
                 error=str(e),
             )
+            # Record router negative outcome
+            try:
+                if (self.employee_config or {}).get("router", {}).get("enabled", False) and selected_model_name:
+                    tenant_id = str((context or {}).get("tenant_id", "")) or "default"
+                    router = ThompsonRouter(tenant_id, str((context or {}).get("task_type", "general")))
+                    router.record_outcome(
+                        model_name=selected_model_name,
+                        success=False,
+                        latency_ms=execution_time * 1000.0,
+                        cost_cents=float((context or {}).get("tokens_used", 0)) * 0.0002,
+                    )
+            except Exception:
+                pass
+            # Persist failed routing decision
+            try:
+                from ...db.session import SessionLocal as _SL
+                from ...db.models import ModelRouteLog
+                with _SL() as _db:
+                    ModelRouteLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
+                    tenant_id = str((context or {}).get("tenant_id", "")) or None
+                    employee_id = str((context or {}).get("employee_id", "")) or None
+                    _db.add(
+                        ModelRouteLog(
+                            tenant_id=tenant_id,
+                            employee_id=employee_id,
+                            task_type=str((context or {}).get("task_type", "general")),
+                            model_name="none",
+                            success=False,
+                            latency_ms=int(execution_time * 1000),
+                        )
+                    )
+                    _db.commit()
+            except Exception:
+                pass
+            # Emit task.failed and persist Error Inspector snapshot
+            try:
+                import asyncio as _asyncio
+                async def _emit3():
+                    ic = await get_interconnect()
+                    await ic.publish(
+                        stream="events.tasks",
+                        type="task.failed",
+                        source="orchestrator",
+                        data={"error": str(e)},
+                        trace_id=get_trace_id(),
+                    )
+                _asyncio.create_task(_emit3())
+            except Exception:
+                pass
+
+            # Persist snapshot (best-effort)
+            try:
+                for session in get_session():
+                    db = session
+                    capture_error_snapshot(
+                        db,
+                        tenant_id=str((context or {}).get("tenant_id", "")) or None,
+                        employee_id=str((context or {}).get("employee_id", "")) or None,
+                        trace_id=get_trace_id(),
+                        task_type=str((context or {}).get("task_type", "general")),
+                        prompt=str(task or ""),
+                        error_message=str(e),
+                        tool_stack=list((context or {}).get("tool_calls", []) or []),
+                        llm_trace={},
+                        tokens_used=int((context or {}).get("tokens_used", 0)),
+                    )
+                    break
+            except Exception:
+                pass
+            return result
 
     def register_adapter(self, adapter: LLMAdapter) -> None:
         """Register a new LLM adapter."""
         self.registry.register(adapter)
+
+    # Removed helper; handled inline
 
     def get_available_models(self) -> list[str]:
         """Get list of available model names."""

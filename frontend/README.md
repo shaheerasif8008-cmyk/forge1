@@ -28,7 +28,11 @@ A modern React TypeScript frontend for the Forge 1 AI orchestration platform, bu
 2. **Set up environment:**
    ```bash
    # Create .env file
-   echo "VITE_API_URL=http://localhost:8000" > .env
+   cat > .env <<EOF
+VITE_API_URL=http://localhost:8000
+VITE_TESTING_API_URL=http://localhost:8002
+VITE_TESTING_SERVICE_KEY=
+EOF
    ```
 
 3. **Start development server:**
@@ -126,6 +130,16 @@ The frontend communicates with the backend API:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VITE_API_URL` | Backend API URL | `http://localhost:8000` |
+| `VITE_TESTING_API_URL` | Testing-App base URL | `http://localhost:8002` |
+| `VITE_TESTING_SERVICE_KEY` | Service key for Testing-App | — |
+
+### Testing Lab (Testing App UI)
+
+Navigate to:
+
+- `/testing` – dashboard
+- `/testing/suites` – suites CRUD and run
+- `/testing/runs/:id` – run detail and signed report link
 
 ## Contributing
 

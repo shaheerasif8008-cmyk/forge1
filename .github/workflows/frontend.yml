@@ -1,0 +1,49 @@
+name: Frontend Deploy (SWA)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend (staging)
+        working-directory: frontend
+        env:
+          VITE_API_URL: ${{ secrets.STAGING_API_URL }}
+          VITE_API_BASE_URL: ${{ secrets.STAGING_API_URL }}
+          VITE_ENVIRONMENT: staging
+        run: npm run build
+
+      - name: Deploy to Azure Static Web Apps
+        id: deploy_swa
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_SWA_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: frontend/dist
+          skip_app_build: true
+
+      - name: Output SWA URL
+        run: |
+          echo "Frontend deployed to Azure Static Web Apps." >> $GITHUB_STEP_SUMMARY
+          echo "SWA URL: ${{ steps.deploy_swa.outputs.static_web_app_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "API base: ${{ secrets.STAGING_API_URL }}" >> $GITHUB_STEP_SUMMARY
+
+

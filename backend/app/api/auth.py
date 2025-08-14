@@ -3,6 +3,7 @@ from typing import Annotated
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
+import logging
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -26,7 +27,13 @@ def create_access_token(subject: str, extra_claims: dict[str, object] | None = N
 
 def decode_access_token(token: str) -> dict[str, object]:
     try:
-        payload: dict[str, object] = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
+        # allow small leeway for clock skew
+        payload: dict[str, object] = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[ALGORITHM],
+            options={"leeway": 60},
+        )
         return payload
     except jwt.PyJWTError as exc:
         raise HTTPException(
@@ -36,8 +43,9 @@ def decode_access_token(token: str) -> dict[str, object]:
         ) from exc
 
 
-router = APIRouter(prefix="/auth", tags=["auth"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+router = APIRouter(prefix="/auth", tags=["auth-legacy"])  # legacy minimal auth kept for backward compat in tests
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+logger = logging.getLogger(__name__)
 
 
 class MeResponse(BaseModel):
@@ -58,6 +66,11 @@ async def login(
     if not username_or_email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username required")
 
+    # Block demo password in non-dev environments (determine env dynamically to honor test monkeypatch)
+    import os as _os
+    current_env = _os.getenv("ENV", settings.env)
+    if current_env != "dev":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Login disabled in this environment")
     if form_data.password != "admin":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -83,12 +96,17 @@ async def login(
         if not roles:
             roles = ["user"]
     else:
-        # Fallback demo token when DB is unavailable or user not found
-        user_id = "1"
-        tenant_id = "default"
-        roles = ["user"]
+        # Strictly dev-only fallback
+        if current_env == "dev":
+            user_id = "1"
+            tenant_id = "default"
+            # Grant admin in dev fallback to enable admin routes during local/testing flows
+            roles = ["admin"]
+        else:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Login disabled in this environment")
 
     token = create_access_token(subject=user_id, extra_claims={"tenant_id": tenant_id, "roles": roles})
+    logger.info("User logged in")
     return {"access_token": token, "token_type": "bearer"}
 
 

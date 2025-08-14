@@ -36,9 +36,11 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
     )
 
-    # Optional vector index (cosine)
+    # Optional vector index (cosine). Parameterize via env VAR LTM_IVFFLAT_LISTS, default 100.
+    import os
+    lists = os.getenv("LTM_IVFFLAT_LISTS", "100")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_ltm_embedding ON long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+        f"CREATE INDEX IF NOT EXISTS ix_ltm_embedding ON long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
     )
 
 

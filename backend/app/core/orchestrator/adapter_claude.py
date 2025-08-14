@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .ai_orchestrator import LLMAdapter, TaskType
+from ..logging_config import get_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,32 @@ class ClaudeAdapter(LLMAdapter):
 
             logger.debug(f"Sending request to Claude API: {self._model}")
 
-            # Make the API call
-            response = await self._client.post(
-                f"{self._base_url}/messages",
-                json=payload,
-            )
+            # Make the API call with small bounded retries and jitter
+            max_retries = int(context.get("retries", 1))
+            import random as _rand
+            delay = 0.25 + _rand.uniform(0, 0.1)
+            # Add trace id header if available
+            headers = {}
+            trace_id = get_trace_id() or str(context.get("trace_id")) if context else None
+            if trace_id:
+                headers["X-Trace-ID"] = trace_id
+            attempt = 0
+            last_exc: Exception | None = None
+            while attempt <= max_retries:
+                try:
+                    response = await self._client.post(
+                        f"{self._base_url}/messages",
+                        json=payload,
+                        headers=headers or None,
+                    )
+                    break
+                except httpx.RequestError as e:  # type: ignore[name-defined]
+                    last_exc = e
+                    if attempt >= max_retries:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay = min(1.0, delay * 1.5 + _rand.uniform(0, 0.05))
+                    attempt += 1
 
             if response.status_code != 200:
                 error_msg = f"Claude API error: {response.status_code} - {response.text}"

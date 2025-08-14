@@ -1,0 +1,19 @@
+id: cost-latency
+name: Cost and Latency Budget
+description: Exercises budget constraints for average workloads
+tags: [budget, performance]
+cases:
+  - id: perf-1
+    input: "Compute Fibonacci of 25"
+    expected:
+      max_latency_ms: 2000
+      max_cost_usd: 0.002
+      contains: ["75025"]
+
+  - id: perf-2
+    input: { task: "embedding", text: "quick brown fox" }
+    expected:
+      max_latency_ms: 1500
+      max_cost_usd: 0.001
+
+

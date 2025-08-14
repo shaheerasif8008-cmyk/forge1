@@ -105,6 +105,20 @@ Use any email with password: `admin`
 
 ## 🔧 Development Setup
 
+### Shared Package (common libs)
+
+Install the shared package in editable mode so both apps can import it without duplication:
+
+```bash
+# From repo root
+pip install -e ./shared
+
+# Or inside a specific venv
+cd backend && pip install -e ../shared
+# (when testing-app exists)
+cd testing-app && pip install -e ../shared
+```
+
 ### Backend Development
 
 ```bash
@@ -264,12 +278,11 @@ npm run build
 ### Docker Deployment
 
 ```bash
-# Build and push images
-docker build -t forge1-backend ./backend
-docker build -t forge1-frontend ./frontend
+# prod stack
+docker compose --profile prod up --build
 
-# Deploy with docker-compose
-docker-compose -f docker-compose.prod.yml up -d
+# testing stack (sandbox)
+docker compose --profile testing -f testing-app/docker-compose.testing.yml up --build
 ```
 
 ### Environment Variables

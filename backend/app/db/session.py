@@ -22,7 +22,14 @@ def _make_engine_url() -> str:
     return url
 
 
-engine = create_engine(_make_engine_url(), pool_pre_ping=True, future=True)
+engine = create_engine(
+    _make_engine_url(),
+    pool_pre_ping=True,
+    future=True,
+    pool_size=getattr(settings, "db_pool_size", 5),
+    max_overflow=getattr(settings, "db_max_overflow", 10),
+    pool_recycle=getattr(settings, "db_pool_recycle", 1800),
+)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 

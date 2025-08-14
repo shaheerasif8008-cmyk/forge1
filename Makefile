@@ -1,4 +1,4 @@
-.PHONY: dev fmt lint test
+.PHONY: dev fmt lint test testing-up testing-down
 
 dev:
 	@echo "Starting backend (8000) and frontend (5173)"
@@ -27,5 +27,14 @@ lint:
 test:
 	@echo "Running backend tests"
 	@cd backend && source .venv/bin/activate && pytest -q
+
+
+testing-up:
+	@echo "Starting testing-app stack on ports 8002/5542/6380"
+	@cd testing-app && docker compose -f docker-compose.testing.yml up -d --build
+
+testing-down:
+	@echo "Stopping testing-app stack"
+	@cd testing-app && docker compose -f docker-compose.testing.yml down -v
 
 

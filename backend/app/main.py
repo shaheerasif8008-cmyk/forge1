@@ -1,18 +1,41 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+import time
+import logging
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 
 from .api import api_router
-from .db.init_db import init_db
-from .db.session import get_session
-from .api.auth import get_current_user
-from .db.models import AuditLog
-from .core.security.rate_limit import sliding_window_allow
+from .api.employees_invoke import router as employees_invoke_router
 from .core.config import settings
+from .core.logging_config import (
+    configure_logging,
+    generate_trace_id,
+    set_request_context,
+    clear_request_context,
+    get_trace_id,
+)
+from .core.security.rate_limit import sliding_window_allow
+from .db.init_db import init_db
+from .core.telemetry.prom_metrics import observe_request
+from .db.models import AuditLog
+from .db.session import get_session
+from .core.security.employee_keys import authenticate_employee_key
+from .interconnect import get_interconnect
+from .interconnect.workers import (
+    start_orchestrator_rpc_server,
+    start_central_ai_worker,
+    start_testing_ai_worker,
+    start_ceo_ai_worker,
+)
+from .core.sandbox import start_sandbox_cleanup_worker
 
+
+# Configure structured logging as early as possible
+configure_logging()
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -21,8 +44,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         init_db()
     except (ImportError, ValueError, RuntimeError, SQLAlchemyError) as e:
-        # Log error but don't fail startup - database might not be available yet
-        print(f"Warning: Database initialization failed: {e}")
+        # In non-dev, fail fast to surface startup issues to the platform orchestrator
+        if settings.env != "dev":
+            logger.error("Database initialization failed during startup", exc_info=e)
+            raise
+        # In dev, log and continue for DX
+        logger.warning("Database initialization failed during startup", exc_info=e)
+
+    # Initialize interconnect early if enabled
+    try:
+        if settings.interconnect_enabled:
+            import asyncio as _asyncio
+            ic = await get_interconnect()
+            # Start background workers (non-blocking). In production this can be split into separate processes.
+            stop_event = _asyncio.Event()
+            _asyncio.create_task(start_orchestrator_rpc_server(ic, stop_event=stop_event))
+            _asyncio.create_task(start_central_ai_worker(ic, stop_event=stop_event))
+            _asyncio.create_task(start_testing_ai_worker(ic, stop_event=stop_event))
+            _asyncio.create_task(start_ceo_ai_worker(ic, stop_event=stop_event))
+            _asyncio.create_task(start_sandbox_cleanup_worker(stop_event=stop_event, interval_seconds=60))
+    except Exception:
+        # Do not block startup in dev/CI
+        pass
 
     yield
 
@@ -33,74 +76,141 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(title="Forge 1 Backend", lifespan=lifespan)
 
 # Add CORS middleware
+origins_cfg = settings.backend_cors_origins
+if settings.env != "dev":
+    if not origins_cfg or origins_cfg.strip() == "*":
+        raise RuntimeError("BACKEND_CORS_ORIGINS must be set to specific origins in non-dev environments")
+    allow_origins = [o.strip() for o in origins_cfg.split(",") if o.strip()]
+else:
+    allow_origins = ["*"]
+
+# Fail-fast on missing JWT and loose CORS in non-dev
+if settings.env != "dev":
+    if not settings.jwt_secret:
+        raise RuntimeError("JWT_SECRET must be set in non-dev environments")
+    if settings.backend_cors_origins.strip() == "*":
+        raise RuntimeError("BACKEND_CORS_ORIGINS must not be '*' in non-dev")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Optional Sentry init (off by default). Only initializes if SENTRY_DSN set and package available.
+try:
+    import os
+    dsn = os.getenv("SENTRY_DSN")
+    if dsn:
+        import sentry_sdk  # type: ignore
+        sentry_sdk.init(dsn=dsn, traces_sample_rate=float(os.getenv("SENTRY_TRACES_RATE", "0")))
+except Exception:
+    pass
+
 # Mount API router with version prefix
 app.include_router(api_router, prefix="/api/v1")
 
+# Also expose the public EaaS invoke API at top-level /v1/employees
+app.include_router(employees_invoke_router)
 
-# Basic audit logging + sliding-window rate limiting middleware
+
 @app.middleware("http")
 async def audit_logging_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
-    response: Response
+    start_ts = time.time()
+    response: Response | None = None
+    status_code = 500
+    # Extract or create a trace ID and parse minimal auth for tenant/user
+    trace_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID")
+    if not trace_id:
+        trace_id = generate_trace_id()
+
+    tenant_id = ""
+    user_id = ""
+    principal: str | None = None
+    auth_header = request.headers.get("Authorization", "")
+    api_key = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else None
+    if api_key:
+        try:
+            from .api.auth import decode_access_token
+
+            payload = decode_access_token(api_key)
+            tenant_id = str(payload.get("tenant_id", ""))
+            user_id = str(payload.get("sub", ""))
+            principal = f"user:{user_id}" if user_id else None
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Fallback: Employee-Key header based auth
+    if not principal:
+        emp_hdr = request.headers.get("Employee-Key")
+        try:
+            # Create a one-off DB session to validate the key without conflicting with per-route sessions
+            for session in get_session():
+                db = session
+                ek = authenticate_employee_key(emp_hdr, db=db, pepper=settings.employee_key_pepper)
+                if ek is not None:
+                    tenant_id = ek.tenant_id
+                    principal = f"employee_key:{ek.employee_key_id}"
+                break
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Set logging context
+        set_request_context(
+        trace_id=trace_id,
+        tenant_id=tenant_id or None,
+            user_id=user_id or None,
+        method=request.method,
+        path=str(request.url.path),
+    )
+
+    # Rate limit per tenant/user/route when available
     try:
-        # Sliding-window rate limit by API key (Bearer token) and route
-        auth_header = request.headers.get("Authorization", "")
-        api_key = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else None
-        if api_key:
+        if api_key or principal:
             try:
                 allowed = sliding_window_allow(
                     settings.redis_url,
-                    key=f"rl:sw:{request.url.path}:{api_key}",
+                    key=f"rl:sw:{request.url.path}:{tenant_id or 'anon'}:{(user_id or principal or 'anon')}",
                     limit=120,
                     window_seconds=60,
                 )
             except Exception:
                 allowed = True
             if not allowed:
-                # Too many requests, but still log below after building response
                 from fastapi.responses import JSONResponse
 
-                resp = JSONResponse({"detail": "Rate limit exceeded"}, status_code=429)
-                response = resp
+                response = JSONResponse({"detail": "Rate limit exceeded"}, status_code=429)
                 status_code = 429
+                logger.warning("Rate limit exceeded", extra={"event": "rate_limit"})
                 raise Exception("rate_limited")
+
+        logger.info(
+            "Request start",
+        )
         response = await call_next(request)
         status_code = response.status_code
-    except Exception:  # noqa: BLE001
-        # If an exception bubbles, mark as 500
-        if "status_code" not in locals():
+    except Exception as exc:  # noqa: BLE001
+        # Log the exception with stack
+        logger.exception("Unhandled request error", exc_info=exc)
+        if response is None:
+            from fastapi.responses import JSONResponse
+
+            response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
             status_code = 500
-        # continue to finally to log
     finally:
+        # Add trace id header for clients
+        if response is not None:
+            try:
+                response.headers["X-Trace-ID"] = trace_id
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Persist audit log (best-effort)
         try:
-            # Best effort: open a short session and insert an audit row
-            # Avoid importing FastAPI dependencies here to prevent dependency cycle
             for session in get_session():
                 db = session
-                user_ctx: dict[str, str] | None = None
-                # We cannot run FastAPI dependencies here; parse header minimally
-                auth_header = request.headers.get("Authorization", "")
-                if auth_header.startswith("Bearer "):
-                    # Attempt to decode for tenant and user id
-                    from .api.auth import decode_access_token
-
-                    token = auth_header.split(" ", 1)[1]
-                    try:
-                        payload = decode_access_token(token)
-                        user_ctx = {
-                            "user_id": str(payload.get("sub", "")),
-                            "tenant_id": str(payload.get("tenant_id", "")),
-                        }
-                    except Exception:  # noqa: BLE001
-                        user_ctx = None
-
                 # Redact sensitive query parameters
                 def _redact(val: str) -> str:
                     return "***" if isinstance(val, str) and len(val) > 0 else ""
@@ -111,8 +221,8 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
                         query_params[k] = _redact(query_params[k])
 
                 entry = AuditLog(
-                    tenant_id=(user_ctx or {}).get("tenant_id"),
-                    user_id=int((user_ctx or {}).get("user_id")) if (user_ctx or {}).get("user_id") else None,
+                    tenant_id=tenant_id or None,
+                    user_id=int(user_id) if user_id.isdigit() else None,
                     action="http_request",
                     method=request.method,
                     path=str(request.url.path),
@@ -120,12 +230,30 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
                     meta={
                         "query": query_params,
                         "client_ip": getattr(request.client, "host", None),
+                        "trace_id": trace_id,
+                        "duration_ms": int((time.time() - start_ts) * 1000),
                     },
                 )
                 db.add(entry)
                 db.commit()
+                try:
+                    observe_request(
+                        route=str(request.url.path),
+                        method=request.method,
+                        status_code=status_code,
+                        duration_seconds=max(0.0, (time.time() - start_ts)),
+                    )
+                except Exception:
+                    pass
                 break
-        except Exception:
-            # best-effort only
+        except Exception:  # noqa: BLE001
             pass
+
+        # Log the end of request
+        logger.info(
+            "Request end",
+        )
+        # Clear logging context at end of request
+        clear_request_context()
+
     return response

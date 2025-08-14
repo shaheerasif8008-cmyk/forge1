@@ -22,7 +22,7 @@ type Employee = {
 };
 
 export default function DashboardPage() {
-  const { user, logout } = useSession();
+  const { user, token, logout } = useSession();
   const [health, setHealth] = useState<Health | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [taskInput, setTaskInput] = useState("");
@@ -44,7 +44,6 @@ export default function DashboardPage() {
       .catch(() => setHealth(null));
 
     // Fetch AI models and capabilities
-    const token = localStorage.getItem("access_token");
     if (token) {
       fetch(`${config.apiUrl}/api/v1/ai/models`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -74,7 +73,6 @@ export default function DashboardPage() {
         .catch(() => setEmployees([]));
     }
     const pollId = setInterval(() => {
-      const token = localStorage.getItem("access_token");
       if (!token) return;
       fetch(`${config.apiUrl}/api/v1/employees/`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -84,7 +82,7 @@ export default function DashboardPage() {
         .catch(() => {});
     }, 10000);
     return () => clearInterval(pollId);
-  }, []);
+  }, [token]);
 
   const executeTask = async () => {
     if (!taskInput.trim()) return;
@@ -93,7 +91,6 @@ export default function DashboardPage() {
     setTaskResult(null);
 
     try {
-      const token = localStorage.getItem("access_token");
       const response = await fetch(`${config.apiUrl}/api/v1/ai/execute`, {
         method: "POST",
         headers: {
@@ -136,7 +133,6 @@ export default function DashboardPage() {
   };
 
   const createEmployee = async () => {
-    const token = localStorage.getItem("access_token");
     if (!token || !newEmpName.trim()) return;
     const resp = await fetch(`${config.apiUrl}/api/v1/employees/`, {
       method: "POST",
@@ -159,7 +155,6 @@ export default function DashboardPage() {
   };
 
   const runEmployee = async (employeeId: string) => {
-    const token = localStorage.getItem("access_token");
     if (!token) return;
     await fetch(`${config.apiUrl}/api/v1/employees/${employeeId}/run`, {
       method: "POST",

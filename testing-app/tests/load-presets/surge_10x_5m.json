@@ -1,0 +1,9 @@
+{
+  "tool": "k6",
+  "duration": "5m",
+  "rate": 1000,
+  "preAllocatedVUs": 400,
+  "endpoints": ["/health"]
+}
+
+

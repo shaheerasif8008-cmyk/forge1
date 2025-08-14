@@ -1,0 +1,27 @@
+{
+  "container": {
+    "image": "${ACR_REGISTRY}/forge1-backend:${TAG}",
+    "resources": {
+      "cpu": 1,
+      "memory": "2Gi"
+    },
+    "env": [
+      { "name": "ENV", "value": "prod" },
+      { "name": "BACKEND_CORS_ORIGINS", "value": "https://admin.forge1.example.com,https://app.forge1.example.com" },
+      { "name": "DATABASE_URL", "keyVaultSecretRef": { "vaultUrl": "${KEYVAULT_URI}", "secretName": "database-url" } },
+      { "name": "REDIS_URL", "keyVaultSecretRef": { "vaultUrl": "${KEYVAULT_URI}", "secretName": "redis-url" } },
+      { "name": "JWT_SECRET", "keyVaultSecretRef": { "vaultUrl": "${KEYVAULT_URI}", "secretName": "jwt-secret" } },
+      { "name": "OPENAI_API_KEY", "keyVaultSecretRef": { "vaultUrl": "${KEYVAULT_URI}", "secretName": "openai-api-key" } },
+      { "name": "OPENROUTER_API_KEY", "keyVaultSecretRef": { "vaultUrl": "${KEYVAULT_URI}", "secretName": "openrouter-api-key" } }
+    ],
+    "ports": [ { "port": 8000 } ]
+  },
+  "scaleSettings": {
+    "scaleType": "manual",
+    "minInstances": 1,
+    "maxInstances": 20,
+    "targetUtilizationPercentage": 70
+  }
+}
+
+

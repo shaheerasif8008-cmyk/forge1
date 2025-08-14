@@ -1,0 +1,12 @@
+{
+  "tool": "locust",
+  "users": 20,
+  "spawn_rate": 5,
+  "duration": "10m",
+  "steps": [
+    {"method": "POST", "path": "/api/v1/ai/execute", "body": {"task": "rag_query", "input": "customer policy terms"}},
+    {"method": "POST", "path": "/api/v1/ai/execute", "body": {"task": "tool_call", "tool": "web_scraper", "args": {"url": "https://example.com"}}}
+  ]
+}
+
+

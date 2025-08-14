@@ -11,6 +11,8 @@ def test_web_scraper_extracts(monkeypatch):
 
     class DummyResponse:
         status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8", "Content-Length": "120"}
+        encoding = "utf-8"
 
         def raise_for_status(self) -> None:  # noqa: D401
             return
@@ -18,6 +20,10 @@ def test_web_scraper_extracts(monkeypatch):
         @property
         def text(self) -> str:
             return "<html><head><title>T</title></head><body><p>hi</p></body></html>"
+
+        @property
+        def content(self) -> bytes:
+            return self.text.encode("utf-8")
 
     class DummyClient:
         def __init__(self, *args, **kwargs):  # noqa: ANN001
@@ -63,3 +69,38 @@ def test_web_scraper_extracts(monkeypatch):
     out = tool.execute(url="https://example.com")
     assert out["title"] == "T"
     assert out["length"] >= 2
+
+
+def test_web_scraper_blocks_non_html(monkeypatch):
+    tool = WebScraper()
+
+    class DummyResponse:
+        status_code = 200
+        headers = {"Content-Type": "application/octet-stream", "Content-Length": "10"}
+
+        def raise_for_status(self) -> None:  # noqa: D401
+            return
+
+        @property
+        def text(self) -> str:
+            return "binary"
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001
+            pass
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *args, **kwargs):  # noqa: ANN001, ANN204
+            return None
+
+        def get(self, url):  # noqa: ANN001
+            return DummyResponse()
+
+    monkeypatch.setattr(httpx, "Client", DummyClient)
+    try:
+        tool.execute(url="https://example.com")
+        assert False, "expected RuntimeError for content-type"
+    except RuntimeError:
+        pass

@@ -243,6 +243,10 @@ export default function Dashboard() {
                   <div className="text-lg font-medium">Analytics</div>
                   <div className="text-sm opacity-90">Performance insights</div>
                 </button>
+                <a href="/testing" className="bg-gray-100 px-4 py-3 rounded-md hover:bg-gray-200 transition-colors text-center">
+                  <div className="text-lg font-medium">Testing Lab</div>
+                  <div className="text-sm opacity-90">Run and observe tests</div>
+                </a>
               </div>
             </div>
           </div>

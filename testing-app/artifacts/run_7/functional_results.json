@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "path": "/health",
+      "status": 404,
+      "passed": false
+    },
+    {
+      "path": "/api/v1/rag/search",
+      "status": 404,
+      "passed": false
+    },
+    {
+      "path": "/api/v1/tools/call",
+      "status": 404,
+      "passed": false
+    }
+  ]
+}

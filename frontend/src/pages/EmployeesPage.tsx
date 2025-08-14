@@ -48,7 +48,10 @@ export default function EmployeesPage() {
 
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Employees</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Employees</h1>
+        <a href="/employees/new" className="text-sm px-3 py-1 border rounded">New Employee</a>
+      </div>
       <div className="bg-white rounded shadow p-4 flex flex-col sm:flex-row gap-2">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="border rounded px-3 py-2 flex-1" />
         <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role" className="border rounded px-3 py-2" />

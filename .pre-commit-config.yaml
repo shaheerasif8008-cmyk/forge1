@@ -4,7 +4,6 @@ repos:
     hooks:
       - id: black
         args: ["--line-length=100", "--config", "backend/pyproject.toml"]
-        additional_dependencies: ["click<8.1.0"]
         files: ^backend/.*\.py$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

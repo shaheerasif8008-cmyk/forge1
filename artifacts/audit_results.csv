@@ -1,0 +1,22 @@
+Section,Status,Notes
+env.kv_compare,PASS,KV secrets present and compared
+env.db_url_format,PASS,driver-qualified acceptable
+env.redis_ping,PASS,ping ok
+env.cors,PASS,origins ok
+backend.live,PASS,ok
+backend.ready,PASS,ok
+backend.prometheus_auth,PASS,protected
+backend.prometheus_ok,PASS,text/plain
+backend.migrations,PASS,ok
+backend.tables,PASS,ok
+backend.pgvector,PASS,ok
+frontend.index,PASS,ok
+frontend.cors_preflight,PASS,ok
+frontend.cors_get,PASS,ok
+azure.acr,PASS,ok
+azure.acr_image,PASS,ok
+azure.aca_revision,PASS,healthy
+azure.redis,SKIP,unset
+azure.pg,SKIP,unset
+azure.kv_access,PASS,ok
+azure.logs_clean,PASS,ok

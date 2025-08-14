@@ -1,14 +1,17 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response, status
+import logging
 from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..db.session import get_session
+from ..core.logging_config import get_trace_id
 
 router = APIRouter(prefix="/health", tags=["health"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/live")
@@ -36,10 +39,15 @@ async def ready(
     except Exception:  # noqa: BLE001
         redis_ok = False
 
-    if not (db_ok and redis_ok):
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unready", "postgres": db_ok, "redis": redis_ok}
-    return {"status": "ready"}
+    # Degraded-ready: if DB is down but Redis is up, return 200 with degraded flag in dev only.
+    if db_ok and redis_ok:
+        return {"status": "ready", "trace_id": get_trace_id()}
+    # In dev, allow degraded state to be considered ready for basic UI/dev flows
+    from ..core.config import settings as cfg
+    if cfg.env == "dev" and redis_ok:
+        return {"status": "ready_degraded", "postgres": db_ok, "redis": redis_ok, "trace_id": get_trace_id()}
+    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"status": "unready", "postgres": db_ok, "redis": redis_ok, "trace_id": get_trace_id()}
 
 
 @router.get("/")
@@ -57,4 +65,9 @@ async def health(db: Session = Depends(get_session)) -> dict[str, Any]:  # noqa:
         client.close()
     except Exception:  # noqa: BLE001
         redis_ok = False
-    return {"status": "healthy" if (postgres_ok and redis_ok) else "unhealthy", "postgres": postgres_ok, "redis": redis_ok}
+    return {
+        "status": "healthy" if (postgres_ok and redis_ok) else "unhealthy",
+        "postgres": postgres_ok,
+        "redis": redis_ok,
+        "trace_id": get_trace_id(),
+    }

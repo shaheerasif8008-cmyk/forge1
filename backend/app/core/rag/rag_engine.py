@@ -21,8 +21,13 @@ The query() method returns dicts with at least: id, content, metadata, score, so
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Protocol
 
+from ..logging_config import get_trace_id
+from ...interconnect import get_interconnect
+
+logger = logging.getLogger(__name__)
 
 class VectorStore(Protocol):
     def add(self, documents: list[dict[str, Any]]) -> None:  # pragma: no cover - protocol
@@ -111,7 +116,19 @@ class RAGEngine:
             )
 
         if normalized:
+            logger.info(
+                "RAG: adding documents",
+            )
             self.vector_store.add(normalized)
+            # Emit rag.ingested (best-effort)
+            try:
+                import asyncio as _asyncio
+                async def _emit():
+                    ic = await get_interconnect()
+                    await ic.publish(stream="events.rag", type="rag.ingested", source="rag_engine", data={"count": len(normalized)})
+                _asyncio.create_task(_emit())
+            except Exception:
+                pass
 
     def query(self, query: str, *, top_k: int | None = None) -> list[dict[str, Any]]:
         """Retrieve and optionally rerank results.
@@ -147,6 +164,7 @@ class RAGEngine:
 
         # Optional rerank
         if self.reranker is not None and norm_candidates:
+            logger.info("RAG: reranking candidates")
             reranked = self.reranker.rerank(query, [r.as_dict() for r in norm_candidates], top_k=k)
             # Re-normalize after reranker
             out: list[_Result] = []
@@ -167,9 +185,26 @@ class RAGEngine:
             out.sort(key=lambda r: r.score, reverse=True)
             return [r.as_dict() for r in out[:k]]
 
-        # Sort initial candidates: assume higher score is better; if scores are distances, caller should
-        # map to similarity before passing in. Keep stable order otherwise.
-        norm_candidates.sort(key=lambda r: r.score, reverse=True)
+        # Sort initial candidates.
+        # Note: When using a vector_store backed by pgvector cosine distance, lower score means closer
+        # (better). In that case, sort ascending. Otherwise (retriever/other similarity), sort descending.
+        if 'source' in locals() and source == 'vector_store':
+            norm_candidates.sort(key=lambda r: r.score, reverse=False)
+        else:
+            norm_candidates.sort(key=lambda r: r.score, reverse=True)
+        logger.info(
+            f"RAG: returning {min(len(norm_candidates), k)} candidates from {source}",
+        )
+        # Emit rag.indexed when using vector_store (best-effort)
+        try:
+            import asyncio as _asyncio
+            if 'source' in locals() and source == 'vector_store':
+                async def _emit2():
+                    ic = await get_interconnect()
+                    await ic.publish(stream="events.rag", type="rag.indexed", source="rag_engine", data={"returned": len(norm_candidates)})
+                _asyncio.create_task(_emit2())
+        except Exception:
+            pass
         return [r.as_dict() for r in norm_candidates[:k]]
 
 

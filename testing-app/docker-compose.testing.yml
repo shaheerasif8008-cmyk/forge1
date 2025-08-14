@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgres_testing:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge1_testing
+    ports:
+      - "5542:5432"  # avoid conflict with prod 5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata_testing:/var/lib/postgresql/data
+
+  redis_testing:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"  # avoid conflict with prod 6379
+
+  testing_app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://forge:forge@postgres_testing:5432/forge1_testing
+      REDIS_URL: redis://redis_testing:6379/1
+      VECTOR_NAMESPACE_PREFIX: testing_
+    ports:
+      - "8002:8002"
+    depends_on:
+      - postgres_testing
+      - redis_testing
+    volumes:
+      - ../shared:/shared:ro
+
+volumes:
+  pgdata_testing:
+
+

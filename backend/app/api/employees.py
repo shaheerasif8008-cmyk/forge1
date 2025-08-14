@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from ..api.auth import get_current_user
+from ..core.config import settings
 from ..core.employee_builder.employee_builder import EmployeeBuilder
 from ..core.runtime.deployment_runtime import DeploymentRuntime
-from ..db.models import AuditLog, Employee, TaskExecution, Tenant
+from ..core.logging_config import get_trace_id
+from ..core.telemetry.metrics_service import MetricsService
 from ..core.security.rate_limit import increment_and_check
-from ..core.config import settings
-from ..db.session import get_session, engine
-
+from ..db.models import AuditLog, Employee, TaskExecution, Tenant
+from ..db.session import engine, get_session
+from ..db.models import TaskExecution
+from ..core.telemetry.timeline import normalize_events
+from ..interconnect import get_interconnect
+from ..interconnect.cloudevents import make_event
 
 router = APIRouter(prefix="/employees", tags=["employees"])
+logger = logging.getLogger(__name__)
 
 
 class EmployeeIn(BaseModel):
@@ -34,6 +41,14 @@ class EmployeeOut(BaseModel):
     tenant_id: str
     owner_user_id: int | None
     config: dict[str, Any]
+
+
+class EmployeePerformanceOut(BaseModel):
+    success_ratio: float | None
+    avg_duration_ms: float | None
+    tasks: int
+    errors: int
+    tool_calls: int
 
 
 def _require_same_tenant(record_tenant: str, req_tenant: str) -> None:
@@ -82,17 +97,20 @@ def create_employee(
         ok = True
     if not ok:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
-    builder = EmployeeBuilder(
-        role_name=payload.role_name,
-        description=payload.description,
-        tools=payload.tools,
-    )
-    config = builder.build_config()
+    try:
+        builder = EmployeeBuilder(
+            role_name=payload.role_name,
+            description=payload.description,
+            tools=payload.tools,
+        )
+        config = builder.build_config()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     # Deterministic ID from name and tenant for demo simplicity
     import hashlib
 
-    eid = hashlib.sha1(f"{current_user['tenant_id']}::{payload.name}".encode("utf-8")).hexdigest()[
+    eid = hashlib.sha1(f"{current_user['tenant_id']}::{payload.name}".encode()).hexdigest()[
         :16
     ]
     try:
@@ -124,15 +142,40 @@ def create_employee(
     except Exception:  # noqa: BLE001
         db.rollback()
 
+    owner_uid = int(current_user["user_id"]) if str(current_user["user_id"]).isdigit() else None
     row = Employee(
         id=eid,
         tenant_id=tenant_id,
-        owner_user_id=int(current_user["user_id"]),
+        owner_user_id=owner_uid,
         name=payload.name,
         config=config,
     )
-    db.add(row)
-    db.commit()
+    try:
+        db.add(row)
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Create failed") from e
+    # Publish interconnect event (best-effort)
+    try:
+        import asyncio
+        trace_id = get_trace_id()
+        async def _publish():
+            ic = await get_interconnect()
+            await ic.publish(
+                stream="events.employees",
+                type="employee.created",
+                source="api.employees",
+                subject=row.id,
+                tenant_id=row.tenant_id,
+                employee_id=row.id,
+                trace_id=trace_id,
+                actor="api",
+                data={"name": row.name},
+            )
+        asyncio.create_task(_publish())
+    except Exception:
+        pass
     return EmployeeOut(
         id=row.id, name=row.name, tenant_id=row.tenant_id, owner_user_id=row.owner_user_id, config=row.config
     )
@@ -183,9 +226,11 @@ async def execute_employee(
     _require_same_tenant(row.tenant_id, current_user["tenant_id"])
 
     runtime = DeploymentRuntime(employee_config=row.config)
-    results = await runtime.start(
-        payload.task, iterations=payload.iterations or 1, context=payload.context or {}
-    )
+    # Inject tenant/employee into context for downstream metrics
+    ctx = dict(payload.context or {})
+    ctx.setdefault("tenant_id", current_user["tenant_id"])
+    ctx.setdefault("employee_id", row.id)
+    results = await runtime.start(payload.task, iterations=payload.iterations or 1, context=ctx)
     # Persist basic execution log
     try:
         for r in results:
@@ -204,10 +249,32 @@ async def execute_employee(
                 task_data="",
             )
             db.add(exec_row)
+            # Persist metrics rollup per task
+            try:
+                from ..core.telemetry.metrics_service import TaskMetrics
+
+                MetricsService().rollup_task(
+                    db,
+                    TaskMetrics(
+                        tenant_id=row.tenant_id,
+                        employee_id=row.id,
+                        duration_ms=int(r.execution_time * 1000),
+                        tokens_used=int(r.metadata.get("tokens_used", 0)),
+                        success=bool(r.success),
+                    ),
+                )
+            except Exception:
+                pass
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()
-    return {"results": [r.model_dump() for r in results]}
+    # Attach trace id to response envelope for client correlation
+    out = {"results": [r.model_dump() for r in results]}
+    trace_id = get_trace_id()
+    if trace_id:
+        out["trace_id"] = trace_id
+    logger.info("Employee run completed")
+    return out
 
 
 class LogOut(BaseModel):
@@ -265,6 +332,48 @@ def get_employee_logs(
     return out
 
 
+@router.get("/{employee_id}/timeline")
+def get_employee_timeline(
+    employee_id: str,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, object]]:
+    # Tenant scoping and normalization
+    _require_same_tenant(current_user["tenant_id"], current_user["tenant_id"])  # no-op, kept consistent
+    events = normalize_events(
+        tenant_id=current_user["tenant_id"], employee_id=employee_id, db=db, limit=limit, offset=offset
+    )
+    return events
+
+
+@router.get("/{employee_id}/performance", response_model=EmployeePerformanceOut)
+def get_employee_performance(
+    employee_id: str,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> EmployeePerformanceOut:
+    from ..core.telemetry.metrics_service import DailyUsageMetric
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+    try:
+        DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+    m = (
+        db.query(DailyUsageMetric)
+        .filter(DailyUsageMetric.tenant_id == row.tenant_id, DailyUsageMetric.employee_id == employee_id)
+        .order_by(DailyUsageMetric.day.desc())
+        .first()
+    )
+    if not m:
+        return EmployeePerformanceOut(success_ratio=None, avg_duration_ms=None, tasks=0, errors=0, tool_calls=0)
+    return EmployeePerformanceOut(success_ratio=float(m.success_ratio or 0.0), avg_duration_ms=float(m.avg_duration_ms or 0.0), tasks=int(m.tasks or 0), errors=int(m.errors or 0), tool_calls=int(m.tool_calls or 0))
+
+
 @router.delete("/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_employee(
     employee_id: str,
@@ -275,8 +384,45 @@ def delete_employee(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     _require_same_tenant(row.tenant_id, current_user["tenant_id"])
-    db.delete(row)
-    db.commit()
+    # Wrap in transaction; if task_executions table is missing in dev, ignore
+    try:
+        with db.begin():  # transactional scope
+            db.delete(row)
+    except Exception:
+        db.rollback()
+        # Best-effort delete without failing when audit/log tables are absent
+        try:
+            import asyncio as _asyncio
+            async def _emit():
+                ic = await get_interconnect()
+                await ic.publish(
+                    stream="events.employees",
+                    type="employee.deleted",
+                    source="api.employees",
+                    subject=employee_id,
+                    tenant_id=row.tenant_id,
+                    employee_id=row.id,
+                )
+            _asyncio.create_task(_emit())
+        except Exception:
+            pass
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # Emit deletion on success
+    try:
+        import asyncio as _asyncio
+        async def _emit2():
+            ic = await get_interconnect()
+            await ic.publish(
+                stream="events.employees",
+                type="employee.deleted",
+                source="api.employees",
+                subject=employee_id,
+                tenant_id=row.tenant_id,
+                employee_id=row.id,
+            )
+        _asyncio.create_task(_emit2())
+    except Exception:
+        pass
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

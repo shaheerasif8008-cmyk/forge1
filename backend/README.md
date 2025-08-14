@@ -128,6 +128,21 @@ pytest
 pytest --cov=app --cov-report=html
 ```
 
+### Structured Logging
+
+Forge 1 backend emits JSON logs with request-scoped trace IDs and tenant context. See `../docs/phase5/logging.md`.
+
+#### Azure Log Analytics
+
+- Container stdout/stderr is collected automatically in Azure environments when Log Analytics is enabled on the container app/AKS cluster.
+- Parse logs as JSON in queries to filter by `trace_id`, `tenant_id`, `level`, etc.
+
+#### Local Promtail + Loki (optional)
+
+- A `docker-compose.override.yml` is provided to run Promtail + Loki locally to aggregate container logs.
+- Start with: `docker compose -f docker-compose.yml -f docker-compose.override.yml up -d`
+- View logs in Grafana (if added) or query directly against Loki’s API.
+
 ### Database Migrations
 
 **Create a new migration:**
@@ -148,8 +163,17 @@ alembic downgrade -1
 ## API Endpoints
 
 ### Authentication
-- `POST /api/v1/auth/login` - User login
-- `GET /api/v1/auth/me` - Get current user info
+- `POST /api/v1/auth/register` - Create account (email/password), optional tenant
+- `POST /api/v1/auth/verify-email` - Verify email via token
+- `POST /api/v1/auth/login` - Login (email/username + password; MFA aware)
+- `POST /api/v1/auth/refresh` - Rotate refresh and mint new access
+- `POST /api/v1/auth/logout` - Revoke refresh session
+- `POST /api/v1/auth/request-password-reset` - Request reset email
+- `POST /api/v1/auth/reset-password` - Reset with token
+- `POST /api/v1/auth/mfa/setup` - Provision TOTP + recovery codes
+- `POST /api/v1/auth/mfa/verify` - Verify TOTP or recovery code
+- `POST /api/v1/auth/mfa/disable` - Disable MFA and revoke sessions
+- `GET /api/v1/auth/me` - Get current user info (legacy)
 
 ### Health
 - `GET /api/v1/health` - Basic health check

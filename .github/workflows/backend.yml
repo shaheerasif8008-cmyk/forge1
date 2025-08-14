@@ -1,0 +1,137 @@
+name: Backend Deploy (ACA)
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-staging:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR (staging)
+        uses: azure/cli@v2
+        env:
+          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        with:
+          inlineScript: |
+            set -euo pipefail
+            IMAGE_TAG=staging
+            # Optional overrides
+            RG="${RESOURCE_GROUP:-}"
+            ACR_NAME_OVERRIDE="${ACR_NAME:-}"
+
+            az config set extension.use_dynamic_install=yes_without_prompt >/dev/null
+
+            if [ -z "$RG" ]; then
+              RG=$(az containerapp list --query "[?name=='forge1-backend'].resourceGroup | [0]" -o tsv)
+            fi
+            if [ -z "$RG" ]; then echo "ERROR: Unable to determine resource group for forge1-backend" >&2; exit 1; fi
+
+            if [ -n "$ACR_NAME_OVERRIDE" ]; then
+              ACR_NAME="$ACR_NAME_OVERRIDE"
+            else
+              CURRENT_IMAGE=$(az containerapp show -g "$RG" -n forge1-backend --query "properties.template.containers[0].image" -o tsv || true)
+              if [ -n "$CURRENT_IMAGE" ]; then
+                ACR_LOGIN=$(echo "$CURRENT_IMAGE" | cut -d/ -f1)
+                ACR_NAME=$(az acr list --query "[?loginServer=='$ACR_LOGIN'].name | [0]" -o tsv)
+              fi
+              if [ -z "${ACR_NAME:-}" ]; then
+                ACR_NAME=$(az acr list --query "[?contains(name,'acrforge1')].name | [0]" -o tsv)
+              fi
+            fi
+            if [ -z "${ACR_NAME:-}" ]; then echo "ERROR: ACR not found" >&2; exit 1; fi
+
+            ACR_LOGIN=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+
+            # Choose Dockerfile and context
+            if [ -f forge1-backend/Dockerfile ]; then DOCKERFILE=forge1-backend/Dockerfile && CONTEXT=forge1-backend; else DOCKERFILE=backend/Dockerfile && CONTEXT=backend; fi
+
+            echo "Building with $DOCKERFILE and pushing to $ACR_NAME as forge1-backend:$IMAGE_TAG"
+            az acr build -r "$ACR_NAME" -t "forge1-backend:$IMAGE_TAG" -f "$DOCKERFILE" "$CONTEXT"
+
+            echo "ACR_LOGIN=$ACR_LOGIN" >> $GITHUB_ENV
+            echo "RG=$RG" >> $GITHUB_ENV
+
+      - name: Update Container App image
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            set -euo pipefail
+            az config set extension.use_dynamic_install=yes_without_prompt >/dev/null
+            az containerapp update -g "$RG" -n forge1-backend --image "$ACR_LOGIN/forge1-backend:staging"
+            FQDN=$(az containerapp show -g "$RG" -n forge1-backend --query properties.configuration.ingress.fqdn -o tsv)
+            echo "FQDN=$FQDN" >> $GITHUB_ENV
+
+      - name: Smoke test
+        run: |
+          chmod +x scripts/azure/50_smoke_backend.sh
+          bash scripts/azure/50_smoke_backend.sh --url "https://${FQDN}"
+
+  build-release-tag:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR (version tag)
+        uses: azure/cli@v2
+        env:
+          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        with:
+          inlineScript: |
+            set -euo pipefail
+            TAG="${GITHUB_REF_NAME}"
+            RG="${RESOURCE_GROUP:-}"
+            ACR_NAME_OVERRIDE="${ACR_NAME:-}"
+            az config set extension.use_dynamic_install=yes_without_prompt >/dev/null
+            if [ -z "$RG" ]; then
+              RG=$(az containerapp list --query "[?name=='forge1-backend'].resourceGroup | [0]" -o tsv)
+            fi
+            if [ -n "$ACR_NAME_OVERRIDE" ]; then
+              ACR_NAME="$ACR_NAME_OVERRIDE"
+            else
+              CURRENT_IMAGE=$(az containerapp show -g "$RG" -n forge1-backend --query "properties.template.containers[0].image" -o tsv || true)
+              if [ -n "$CURRENT_IMAGE" ]; then
+                ACR_LOGIN=$(echo "$CURRENT_IMAGE" | cut -d/ -f1)
+                ACR_NAME=$(az acr list --query "[?loginServer=='$ACR_LOGIN'].name | [0]" -o tsv)
+              fi
+              if [ -z "${ACR_NAME:-}" ]; then
+                ACR_NAME=$(az acr list --query "[?contains(name,'acrforge1')].name | [0]" -o tsv)
+              fi
+            fi
+            if [ -z "${ACR_NAME:-}" ]; then echo "ERROR: ACR not found" >&2; exit 1; fi
+
+            if [ -f forge1-backend/Dockerfile ]; then DOCKERFILE=forge1-backend/Dockerfile && CONTEXT=forge1-backend; else DOCKERFILE=backend/Dockerfile && CONTEXT=backend; fi
+            az acr build -r "$ACR_NAME" -t "forge1-backend:$TAG" -f "$DOCKERFILE" "$CONTEXT"
+            # Blue/Green rollout placeholder:
+            # az containerapp revision set-mode ...
+            # az containerapp ingress traffic set ...
+
+

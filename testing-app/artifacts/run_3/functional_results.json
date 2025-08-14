@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {
+      "path": "/api/v1/health/live",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "path": "/api/v1/health/ready",
+      "status": 200,
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "tool": "k6",
+  "duration": "10m",
+  "rate": 100,
+  "endpoints": ["/health"]
+}
+
+

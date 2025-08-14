@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .ai_orchestrator import LLMAdapter, TaskType
+from ..logging_config import get_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class OpenAIAdapter(LLMAdapter):
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
-            timeout=60.0,
+            timeout=httpx.Timeout(connect=3.0, read=20.0, write=10.0, pool=3.0),
         )
 
         logger.info(f"Initialized OpenAI adapter for model: {self._model}")
@@ -100,11 +101,33 @@ class OpenAIAdapter(LLMAdapter):
 
             logger.debug(f"Sending request to OpenAI API: {self._model}")
 
-            # Make the API call
-            response = await self._client.post(
-                f"{self._base_url}/chat/completions",
-                json=payload,
-            )
+            # Make the API call with small bounded retries and jitter
+            max_retries = int(context.get("retries", 1))
+            import random as _rand
+            delay = 0.25 + _rand.uniform(0, 0.1)
+            attempt = 0
+            last_exc: Exception | None = None
+            while attempt <= max_retries:
+                try:
+                    # Propagate trace id through headers if present
+                    headers = {}
+                    trace_id = get_trace_id() or str(context.get("trace_id")) if context else None
+                    if trace_id:
+                        headers["X-Trace-ID"] = trace_id
+                    response = await self._client.post(
+                        f"{self._base_url}/chat/completions",
+                        json=payload,
+                        headers=headers or None,
+                        timeout=httpx.Timeout(connect=3.0, read=20.0),
+                    )
+                    break
+                except httpx.RequestError as e:
+                    last_exc = e
+                    if attempt >= max_retries:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay = min(1.0, delay * 1.5 + _rand.uniform(0, 0.05))
+                    attempt += 1
 
             if response.status_code != 200:
                 error_msg = f"OpenAI API error: {response.status_code} - {response.text}"

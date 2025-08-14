@@ -34,6 +34,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          export DATABASE_URL=postgresql://forge:forge@localhost:5432/forge
+          psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          # Ensure pgvector exists before running tests
+          psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Lint
         working-directory: backend
         run: |

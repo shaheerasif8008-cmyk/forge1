@@ -104,18 +104,18 @@ class ShortTermMemory:
             result = await client.setex(key, expiry, serialized_data)
 
             if result:
-                logger.debug(f"Session saved successfully: {key} (expires in {expiry}s)")
+                logger.debug(f"Session saved successfully")
                 return True
             else:
-                logger.warning(f"Failed to save session: {key}")
+                logger.warning("Failed to save session")
                 return False
 
         except redis.RedisError as e:
-            error_msg = f"Redis error saving session {key}: {e}"
+            error_msg = f"Redis error saving session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            error_msg = f"Unexpected error saving session {key}: {e}"
+            error_msg = f"Unexpected error saving session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -142,7 +142,7 @@ class ShortTermMemory:
             serialized_data = await client.get(key)
 
             if serialized_data is None:
-                logger.debug(f"Session not found or expired: {key}")
+                logger.debug("Session not found or expired")
                 return None
 
             # Deserialize and validate session data
@@ -162,17 +162,17 @@ class ShortTermMemory:
                 return session_data.data
 
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"Invalid session data format for {key}: {e}")
+                logger.warning(f"Invalid session data format: {e}")
                 # Clean up corrupted data
                 await self.delete_session(key)
                 return None
 
         except redis.RedisError as e:
-            error_msg = f"Redis error retrieving session {key}: {e}"
+            error_msg = f"Redis error retrieving session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            error_msg = f"Unexpected error retrieving session {key}: {e}"
+            error_msg = f"Unexpected error retrieving session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -199,18 +199,18 @@ class ShortTermMemory:
             result = await client.delete(key)
 
             if result > 0:
-                logger.debug(f"Session deleted successfully: {key}")
+                logger.debug("Session deleted successfully")
                 return True
             else:
-                logger.debug(f"Session not found for deletion: {key}")
+                logger.debug("Session not found for deletion")
                 return False
 
         except redis.RedisError as e:
-            error_msg = f"Redis error deleting session {key}: {e}"
+            error_msg = f"Redis error deleting session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            error_msg = f"Unexpected error deleting session {key}: {e}"
+            error_msg = f"Unexpected error deleting session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -236,11 +236,11 @@ class ShortTermMemory:
             return bool(exists_count > 0)
 
         except redis.RedisError as e:
-            error_msg = f"Redis error checking session existence {key}: {e}"
+            error_msg = f"Redis error checking session existence: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            error_msg = f"Unexpected error checking session existence {key}: {e}"
+            error_msg = f"Unexpected error checking session existence: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
@@ -272,11 +272,11 @@ class ShortTermMemory:
                 return ttl_val
 
         except redis.RedisError as e:
-            error_msg = f"Redis error getting TTL for session {key}: {e}"
+            error_msg = f"Redis error getting TTL for session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            error_msg = f"Unexpected error getting TTL for session {key}: {e}"
+            error_msg = f"Unexpected error getting TTL for session: {e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 

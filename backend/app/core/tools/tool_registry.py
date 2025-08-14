@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -68,6 +69,9 @@ class ToolRegistry:
         if not override and tool_name in self._name_to_tool:
             raise ValueError(f"Tool '{tool_name}' is already registered")
         self._name_to_tool[tool_name] = tool
+        logging.getLogger(__name__).info(
+            f"Tool registered: {tool_name}",
+        )
 
     def get(self, name: str) -> Tool | None:
         """Retrieve a tool by name."""
@@ -118,9 +122,9 @@ class ToolRegistry:
                         # Prefer the tool's internal name for registration
                         self.register(tool, override=True)
                         tools_registered += 1
-                        import logging
-
-                        logging.getLogger(__name__).info(f"Registered built-in tool: {tool.name}")
+                        logging.getLogger(__name__).info(
+                            f"Registered built-in tool: {tool.name}",
+                        )
             except Exception:  # noqa: BLE001
                 # Skip faulty modules silently to avoid breaking startup
                 continue

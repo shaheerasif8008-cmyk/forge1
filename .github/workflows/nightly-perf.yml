@@ -1,0 +1,41 @@
+name: nightly-perf
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # daily 3am UTC
+
+jobs:
+  run-perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Run Capacity and Chaos-Burst
+        env:
+          TESTING_URL: ${{ secrets.TESTING_URL }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          TESTING_SERVICE_KEY: ${{ secrets.TESTING_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+          API="$TESTING_URL/api/v1"
+          # Capacity 15m (override duration)
+          CAP=$(curl -s -H "X-Testing-Service-Key: $TESTING_SERVICE_KEY" "$API/suites" | jq -r '.[] | select(.name=="Capacity") | .id')
+          CHS=$(curl -s -H "X-Testing-Service-Key: $TESTING_SERVICE_KEY" "$API/suites" | jq -r '.[] | select(.name=="Chaos-Burst") | .id')
+          for SID in $CAP $CHS; do
+            [ -z "$SID" ] && continue
+            RES=$(curl -s -H "X-Testing-Service-Key: $TESTING_SERVICE_KEY" -H 'Content-Type: application/json' -d "{\"suite_id\": $SID, \"target_api_url\": \"$BACKEND_URL\"}" "$API/runs")
+            RID=$(echo "$RES" | jq -r '.run_id')
+            INFO=$(curl -s -H "X-Testing-Service-Key: $TESTING_SERVICE_KEY" "$API/runs/$RID")
+            STATUS=$(echo "$INFO" | jq -r '.run.status')
+            REPORT=$(echo "$INFO" | jq -r '.signed_report_url')
+            echo "Run $RID status: $STATUS | Report: $TESTING_URL$REPORT"
+            # Extract p95 and error rate if present
+            P95=$(echo "$INFO" | jq -r '.run.stats.load_k6.p95_latency_ms // .run.stats.load_locust.p95_latency_ms // 0')
+            ERR=$(echo "$INFO" | jq -r '.run.stats.load_k6.error_rate // 0')
+            echo "p95=${P95}ms error=${ERR}"
+            if [ "$(printf '%.0f' "$P95")" -gt 2000 ] || awk "BEGIN{exit !($ERR > 0.01)}"; then
+              echo "::error::Performance SLO breach (p95=${P95}ms error=${ERR}); report: $TESTING_URL$REPORT"
+              exit 1
+            fi
+          done
+
+

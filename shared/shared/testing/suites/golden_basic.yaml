@@ -1,0 +1,21 @@
+id: golden-basic
+name: Golden Basic Acceptance
+description: Simple correctness checks for baseline behavior
+tags: [golden, basic]
+cases:
+  - id: gb-1
+    input: "Summarize: Hello world."
+    expected:
+      contains: ["hello", "world"]
+
+  - id: gb-2
+    input: { task: "classify", text: "This is a positive message" }
+    expected:
+      contains: ["positive"]
+
+  - id: gb-3
+    input: "Return the word: foobar"
+    expected:
+      contains: ["foobar"]
+
+

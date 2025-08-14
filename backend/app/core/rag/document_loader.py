@@ -17,8 +17,12 @@ import json
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
+import logging
 
 import httpx
+from ..logging_config import get_trace_id
+
+logger = logging.getLogger(__name__)
 
 Document = dict[str, Any]
 
@@ -201,11 +205,34 @@ class DocumentLoader:
                 )
             return out
 
-        # Fallback: fetch and return raw text
-        with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+        # Fallback: fetch and return raw text with safeguards
+        headers = {"User-Agent": "Forge1-DocumentLoader/1.0"}
+        trace_id = get_trace_id()
+        if trace_id:
+            headers["X-Trace-ID"] = trace_id
+        max_bytes = 2 * 1024 * 1024
+        with httpx.Client(follow_redirects=True, timeout=20.0, headers=headers) as client:
+            logger.info("DocumentLoader fetching URL")
             resp = client.get(url)
             resp.raise_for_status()
-            text = resp.text
+            ctype = resp.headers.get("Content-Type", "").lower()
+            if not (
+                ctype.startswith("text/") or "json" in ctype or "html" in ctype
+            ):
+                # Avoid ingesting binaries
+                raise RuntimeError("Unsupported content type for URL ingestion")
+            clen = resp.headers.get("Content-Length")
+            if clen is not None:
+                try:
+                    if int(clen) > max_bytes:
+                        raise RuntimeError("Content too large")
+                except Exception:
+                    pass
+            content = resp.content[: max_bytes + 1]
+            if len(content) > max_bytes:
+                raise RuntimeError("Content too large")
+            text = content.decode(resp.encoding or "utf-8", errors="ignore")
+        logger.info("DocumentLoader fetched URL successfully")
         return [{"text": text, "metadata": {**meta, "source": url, "loader": "httpx"}}]
 
     def _handle_html(self, spec: dict[str, Any]) -> list[Document]:

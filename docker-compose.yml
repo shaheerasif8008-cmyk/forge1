@@ -3,6 +3,7 @@ services:
   backend:
     build: ./backend
     container_name: forge-backend
+    profiles: ["prod"]
     env_file:
       - .env
     environment:
@@ -16,9 +17,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    networks:
+      - prod_net
+
+  frontend:
+    image: node:18-alpine
+    container_name: forge-frontend
+    profiles: ["prod"]
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm ci && npm run dev -- --host"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    networks:
+      - prod_net
+
   postgres:
     image: ankane/pgvector:latest
     container_name: forge-postgres
+    profiles: ["prod"]
     environment:
       - POSTGRES_USER=forge
       - POSTGRES_PASSWORD=forge
@@ -27,19 +47,82 @@ services:
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forge"]
+    
       interval: 5s
       timeout: 5s
       retries: 5
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - prod_net
+
   redis:
     image: redis:7-alpine
     container_name: forge-redis
+    profiles: ["prod"]
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - prod_net
+
+  # Testing profile stack (isolated)
+  testing_app:
+    build: ./testing-app
+    container_name: forge-testing-app
+    profiles: ["testing"]
+    env_file:
+      - ./testing-app/.env.testing
+    environment:
+      # Fallbacks if no env file present
+      - DATABASE_URL=postgresql+psycopg://forge:forge@postgres_testing:5432/forge1_testing
+      - REDIS_URL=redis://redis_testing:6379/1
+      - VECTOR_NAMESPACE_PREFIX=testing_
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres_testing:
+        condition: service_healthy
+      redis_testing:
+        condition: service_started
+    networks:
+      - testing_net
+
+  postgres_testing:
+    image: postgres:16
+    container_name: forge-postgres-testing
+    profiles: ["testing"]
+    environment:
+      - POSTGRES_USER=forge
+      - POSTGRES_PASSWORD=forge
+      - POSTGRES_DB=forge1_testing
+    ports:
+      - "5542:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata_testing:/var/lib/postgresql/data
+    networks:
+      - testing_net
+
+  redis_testing:
+    image: redis:7-alpine
+    container_name: forge-redis-testing
+    profiles: ["testing"]
+    ports:
+      - "6380:6379"
+    networks:
+      - testing_net
 
 volumes:
   pgdata:
+  pgdata_testing:
+
+networks:
+  prod_net:
+  testing_net:
 
 

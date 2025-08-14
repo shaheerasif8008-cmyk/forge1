@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import config from "../config";
+import { initApiClient } from "../api/client";
 
 interface User {
   id: string;
@@ -86,12 +87,31 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
   const login = (authToken: string) => {
     setToken(authToken);
+    // Optional persistence for demo UX
+    if (import.meta.env.VITE_FEATURE_SESSION_MANAGEMENT === 'true') {
+      try { sessionStorage.setItem('forge_token', authToken); } catch {}
+    }
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
+    try { sessionStorage.removeItem('forge_token'); } catch {}
   };
+
+  // Initialize API client hooks
+  useEffect(() => {
+    initApiClient({
+      getTokens: () => ({ accessToken: token || "", refreshToken: null }),
+      setTokens: (t) => {
+        if (t.accessToken) {
+          setToken(t.accessToken);
+        }
+      },
+      onLogout: () => logout(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const value: SessionContextType = {
     user,

@@ -1,0 +1,144 @@
+name: CI (prod)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+          POSTGRES_DB: forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U forge" --health-interval=10s --health-timeout=5s --health-retries=5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install types-PyYAML
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          export DATABASE_URL=postgresql://forge:forge@localhost:5432/forge
+          psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+      - name: Lint/Type/Format
+        working-directory: backend
+        run: |
+          pip install ruff mypy black
+          ruff check .
+          mypy app
+          black --check .
+      - name: Tests
+        working-directory: backend
+        run: |
+          pytest -q
+
+      - name: Install jq and Azure CLI
+        if: github.ref == 'refs/heads/main'
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq ca-certificates curl apt-transport-https lsb-release gnupg
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Build & Push image to ACR
+        if: github.ref == 'refs/heads/main'
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+          IMAGE_NAME: forge1-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "$AZURE_CREDENTIALS" > creds.json
+          az login --service-principal -u $(jq -r .clientId creds.json) -p $(jq -r .clientSecret creds.json) --tenant $(jq -r .tenantId creds.json)
+          az account set --subscription $(jq -r .subscriptionId creds.json)
+          bash deploy/foundry/acr_push.sh "$ACR_NAME" "$IMAGE_NAME" "$IMAGE_TAG"
+
+      - name: Deploy to Azure AI Foundry
+        if: github.ref == 'refs/heads/main'
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          RESOURCE_GROUP: ${{ secrets.AZURE_RG }}
+          WORKSPACE: ${{ secrets.AZURE_FOUNDRY_WS }}
+          ENDPOINT: forge1-backend
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+          KEYVAULT_NAME: ${{ secrets.KEYVAULT_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "$AZURE_CREDENTIALS" > creds.json
+          az login --service-principal -u $(jq -r .clientId creds.json) -p $(jq -r .clientSecret creds.json) --tenant $(jq -r .tenantId creds.json)
+          az account set --subscription $(jq -r .subscriptionId creds.json)
+          bash deploy/foundry/foundry_deploy.sh "$RESOURCE_GROUP" "$WORKSPACE" "$ENDPOINT" "$ACR_NAME" "$KEYVAULT_NAME" "$IMAGE_TAG"
+
+  prod_sanity:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq and Azure CLI
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq ca-certificates curl apt-transport-https lsb-release gnupg
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      - name: Azure login
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          echo "$AZURE_CREDENTIALS" > creds.json
+          az login --service-principal -u $(jq -r .clientId creds.json) -p $(jq -r .clientSecret creds.json) --tenant $(jq -r .tenantId creds.json)
+          az account set --subscription $(jq -r .subscriptionId creds.json)
+      - name: Validate Key Vault Secrets
+        env:
+          KEYVAULT_NAME: ${{ secrets.KEYVAULT_NAME }}
+        run: |
+          for s in database-url redis-url jwt-secret; do
+            az keyvault secret show --vault-name "$KEYVAULT_NAME" --name "$s" >/dev/null
+          done
+      - name: Validate CORS not wildcard
+        run: |
+          if grep -q '"BACKEND_CORS_ORIGINS"' deploy/foundry/foundry_deploy.json; then
+            VAL=$(jq -r '.container.env[] | select(.name=="BACKEND_CORS_ORIGINS") | .value' deploy/foundry/foundry_deploy.json)
+            if [ -z "$VAL" ] || [ "$VAL" = "*" ]; then
+              echo "Invalid BACKEND_CORS_ORIGINS value: $VAL" && exit 1
+            fi
+          fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+      - name: Type check
+        working-directory: frontend
+        run: npm run type-check
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+

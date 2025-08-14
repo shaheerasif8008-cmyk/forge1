@@ -14,10 +14,16 @@ fields or tools are missing.
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from ..orchestrator.ai_orchestrator import AIOrchestrator, TaskResult
 from ..rag.rag_engine import RAGEngine
 from ..tools.tool_registry import ToolRegistry
+from ..logging_config import get_trace_id
+from ..telemetry.metrics_service import MetricsService, TaskMetrics
+from ...interconnect import get_interconnect
+from ...shadow.dispatcher import should_shadow, tee_and_record
+from ...shadow.differ import semantic_diff_score
 
 
 class DeploymentRuntime:
@@ -41,6 +47,7 @@ class DeploymentRuntime:
         self.registry = registry or ToolRegistry()
         self.rag_engine = rag_engine
         self.orchestrator: AIOrchestrator | None = None
+        self.logger = logging.getLogger(__name__)
 
         self._validate_config(self.config)
         # Load built-in tools and ensure required ones are available
@@ -102,6 +109,7 @@ class DeploymentRuntime:
             rag = RAGEngine(vector_store=None, retriever=_NoopRetriever(), reranker=None)
 
         self.orchestrator = AIOrchestrator(rag_engine=rag)
+        self.logger.info("DeploymentRuntime orchestrator built")
         return self.orchestrator
 
     async def start(
@@ -141,10 +149,69 @@ class DeploymentRuntime:
         results: list[TaskResult] = []
         prompt = seed_task
         for _i in range(max(1, iterations)):
+            # propagate trace id to context for each iteration
+            trace_id = get_trace_id()
+            if trace_id:
+                run_ctx.setdefault("trace_id", trace_id)
+            self.logger.info("DeploymentRuntime iteration start")
             res = await self.orchestrator.run_task(prompt, context=run_ctx)
+            # Shadow canary tee (best-effort, optional)
+            try:
+                tenant_id = str(run_ctx.get("tenant_id", ""))
+                employee_id = str(run_ctx.get("employee_id", ""))
+                if tenant_id and employee_id:
+                    for session in get_session():
+                        db = session
+                        do_shadow, cfg = should_shadow(db, tenant_id=tenant_id, employee_id=employee_id)
+                        if do_shadow and cfg and cfg.shadow_employee_id:
+                            shadow_rt = DeploymentRuntime(employee_config=self.config)
+                            shadow_rt.build_orchestrator()
+                            shadow_res = await shadow_rt.orchestrator.run_task(prompt, context=run_ctx)  # type: ignore[union-attr]
+                            score = semantic_diff_score(res.output or "", shadow_res.output or "")
+                            tee_and_record(
+                                db,
+                                tenant_id=tenant_id,
+                                employee_id=employee_id,
+                                shadow_employee_id=str(cfg.shadow_employee_id),
+                                input_text=prompt,
+                                primary_output=res.output,
+                                shadow_output=shadow_res.output,
+                                score=score,
+                            )
+                        # end session scope
+                        break
+            except Exception:
+                pass
+            # Publish task lifecycle events (best-effort)
+            try:
+                import asyncio as _asyncio
+                tenant_id = str(run_ctx.get("tenant_id", "")) or None
+                employee_id = str(run_ctx.get("employee_id", "")) or None
+                async def _emit():
+                    ic = await get_interconnect()
+                    await ic.publish(
+                        stream="events.tasks",
+                        type="task.completed" if res.success else "task.failed",
+                        source="runtime.deployment",
+                        subject=employee_id or "",
+                        tenant_id=tenant_id,
+                        employee_id=employee_id,
+                        trace_id=trace_id,
+                        actor="runtime",
+                        data={
+                            "output_len": len(res.output or ""),
+                            "model": res.model_used,
+                            "execution_ms": int(res.execution_time * 1000),
+                            "error": res.error,
+                        },
+                    )
+                _asyncio.create_task(_emit())
+            except Exception:
+                pass
             results.append(res)
             # Basic loop example: break if failed or nothing to continue
             if not res.success:
                 break
             # In a richer runtime, update `prompt` or `run_ctx` here.
+        self.logger.info("DeploymentRuntime completed")
         return results

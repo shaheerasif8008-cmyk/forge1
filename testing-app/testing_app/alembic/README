@@ -1,0 +1,7 @@
+Alembic migrations for testing-app (schema "testing").
+
+Run commands:
+alembic -c testing_app/alembic.ini revision --autogenerate -m "init"
+alembic -c testing_app/alembic.ini upgrade head
+
+

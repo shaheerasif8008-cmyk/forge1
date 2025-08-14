@@ -4,6 +4,7 @@ interface Config {
   apiUrl: string;
   environment: string;
   version: string;
+  docsUrl: string;
   features: {
     aiTasks: boolean;
     sessionManagement: boolean;
@@ -12,9 +13,13 @@ interface Config {
 }
 
 const config: Config = {
-  apiUrl: import.meta.env.VITE_API_URL || "http://localhost:8000",
+  apiUrl:
+    import.meta.env.VITE_API_BASE_URL ||
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:8000",
   environment: import.meta.env.VITE_ENVIRONMENT || "development",
   version: import.meta.env.VITE_APP_VERSION || "1.0.0",
+  docsUrl: import.meta.env.VITE_DOCS_URL || "/docs",
   features: {
     aiTasks: true,
     sessionManagement: true,
