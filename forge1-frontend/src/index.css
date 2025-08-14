@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* App base styles */
+:root {
+	--background: 255 255 255;
+	--foreground: 17 24 39;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html, body, #root {
+	height: 100%;
+}
+
+body {
+	margin: 0;
+	background-color: rgb(var(--background));
+	color: rgb(var(--foreground));
+	font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* Dark mode using prefers-color-scheme */
+@media (prefers-color-scheme: dark) {
+	:root {
+		--background: 17 24 39; /* gray-900 */
+		--foreground: 243 244 246; /* gray-100 */
+	}
+}
