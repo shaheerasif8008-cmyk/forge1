@@ -16,12 +16,16 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
+def _secret_or_dev() -> str:
+    return settings.jwt_secret or "dev"
+
+
 def create_access_token(subject: str, extra_claims: dict[str, object] | None = None) -> str:
     expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload: dict[str, object] = {"sub": subject, "exp": expire}
     if extra_claims:
         payload.update(extra_claims)
-    token = jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+    token = jwt.encode(payload, _secret_or_dev(), algorithm=ALGORITHM)
     return token
 
 
@@ -30,7 +34,7 @@ def decode_access_token(token: str) -> dict[str, object]:
         # allow small leeway for clock skew
         payload: dict[str, object] = jwt.decode(
             token,
-            settings.jwt_secret,
+            _secret_or_dev(),
             algorithms=[ALGORITHM],
             options={"leeway": 60},
         )

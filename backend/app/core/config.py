@@ -50,5 +50,10 @@ class Settings(BaseSettings):
     interconnect_enabled: bool = Field(default=True, alias="INTERCONNECT_ENABLED")
     ai_comms_dashboard_enabled: bool = Field(default=True, alias="AI_COMMS_DASHBOARD_ENABLED")
 
+    def model_post_init(self, __context: object) -> None:  # type: ignore[override]
+        # In dev and test environments, fall back to a non-empty secret to simplify local flows/tests
+        if (self.env or "dev") == "dev" and not (self.jwt_secret and str(self.jwt_secret).strip()):
+            self.jwt_secret = "dev"
+
 
 settings = Settings()
