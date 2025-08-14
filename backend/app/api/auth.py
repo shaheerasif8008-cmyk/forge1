@@ -21,16 +21,24 @@ def create_access_token(subject: str, extra_claims: dict[str, object] | None = N
     payload: dict[str, object] = {"sub": subject, "exp": expire}
     if extra_claims:
         payload.update(extra_claims)
-    token = jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+    # Use fallback secret in dev if JWT_SECRET not set
+    jwt_secret = settings.jwt_secret
+    if jwt_secret is None and settings.env == "dev":
+        jwt_secret = "dev-only-secret-do-not-use-in-production"
+    token = jwt.encode(payload, jwt_secret, algorithm=ALGORITHM)
     return token
 
 
 def decode_access_token(token: str) -> dict[str, object]:
     try:
+        # Use fallback secret in dev if JWT_SECRET not set
+        jwt_secret = settings.jwt_secret
+        if jwt_secret is None and settings.env == "dev":
+            jwt_secret = "dev-only-secret-do-not-use-in-production"
         # allow small leeway for clock skew
         payload: dict[str, object] = jwt.decode(
             token,
-            settings.jwt_secret,
+            jwt_secret,
             algorithms=[ALGORITHM],
             options={"leeway": 60},
         )

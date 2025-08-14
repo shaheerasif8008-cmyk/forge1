@@ -43,13 +43,20 @@ def _sign(payload: dict[str, Any], key: str, ttl: timedelta) -> str:
 def mint_access(subject: str, tenant_id: str, roles: list[str] | None = None) -> str:
     ttl = timedelta(minutes=settings.access_token_ttl_minutes)
     claims: dict[str, Any] = {"sub": subject, "tenant_id": tenant_id, "roles": roles or ["user"]}
-    return _sign(claims, settings.jwt_secret or "dev", ttl)
+    jwt_secret = settings.jwt_secret
+    if jwt_secret is None and settings.env == "dev":
+        jwt_secret = "dev-only-secret-do-not-use-in-production"
+    return _sign(claims, jwt_secret, ttl)
 
 
 def mint_refresh(db: Session, user_id: int, tenant_id: str, session_meta: dict[str, Any] | None = None) -> tuple[str, str]:
     ttl = timedelta(days=settings.refresh_token_ttl_days)
     jti = str(uuid.uuid4())
-    token = _sign({"sub": str(user_id), "tenant_id": tenant_id, "jti": jti, "typ": "refresh"}, settings.jwt_refresh_secret or (settings.jwt_secret or "dev"), ttl)
+    claims: dict[str, Any] = {"sub": str(user_id), "tenant_id": tenant_id, "jti": jti, "typ": "refresh"}
+    jwt_refresh_secret = settings.jwt_refresh_secret
+    if jwt_refresh_secret is None and settings.env == "dev":
+        jwt_refresh_secret = "dev-only-refresh-secret-do-not-use-in-production"
+    token = _sign(claims, jwt_refresh_secret, ttl)
     token_hash = _hash_token(token)
     session = AuthSession(
         id=str(uuid.uuid4()),
@@ -67,12 +74,20 @@ def mint_refresh(db: Session, user_id: int, tenant_id: str, session_meta: dict[s
 
 
 def verify_access(token: str) -> dict[str, Any]:
-    return jwt.decode(token, settings.jwt_secret or "dev", algorithms=[ALGO], options={"leeway": 60})
+    jwt_secret = settings.jwt_secret
+    if jwt_secret is None and settings.env == "dev":
+        jwt_secret = "dev-only-secret-do-not-use-in-production"
+    return jwt.decode(token, jwt_secret, algorithms=[ALGO], options={"leeway": 60})
 
 
 def verify_refresh(db: Session, token: str) -> AuthSession | None:
     try:
-        payload = jwt.decode(token, settings.jwt_refresh_secret or (settings.jwt_secret or "dev"), algorithms=[ALGO], options={"leeway": 60})
+        jwt_refresh_secret = settings.jwt_refresh_secret
+        if jwt_refresh_secret is None:
+            jwt_refresh_secret = settings.jwt_secret
+            if jwt_refresh_secret is None and settings.env == "dev":
+                jwt_refresh_secret = "dev-only-refresh-secret-do-not-use-in-production"
+        payload = jwt.decode(token, jwt_refresh_secret, algorithms=[ALGO], options={"leeway": 60})
         if payload.get("typ") != "refresh":
             return None
         jti = str(payload.get("jti", ""))
