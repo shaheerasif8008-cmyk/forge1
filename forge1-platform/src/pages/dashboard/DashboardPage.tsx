@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { 
@@ -12,10 +12,8 @@ import {
   Plus
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { formatCurrency, formatNumber } from '../../lib/utils';
+import { formatCurrency } from '../../lib/utils';
 import {
-  LineChart,
-  Line,
   BarChart,
   Bar,
   XAxis,
