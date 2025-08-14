@@ -158,10 +158,10 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
             pass
 
     # Set logging context
-        set_request_context(
+    set_request_context(
         trace_id=trace_id,
         tenant_id=tenant_id or None,
-            user_id=user_id or None,
+        user_id=user_id or None,
         method=request.method,
         path=str(request.url.path),
     )

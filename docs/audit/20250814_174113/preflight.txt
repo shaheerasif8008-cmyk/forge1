@@ -1,0 +1,4 @@
+Detected paths:
+backend
+frontend
+testing-app
