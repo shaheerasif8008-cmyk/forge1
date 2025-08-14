@@ -6,12 +6,12 @@ interface UseSSEOptions {
   url: string;
   headers?: Record<string, string>;
   enabled?: boolean;
-  onMessage?: (data: any) => void;
+  onMessage?: (data: unknown) => void;
   onError?: (error: Event) => void;
 }
 
 interface UseSSEReturn {
-  data: any[];
+  data: unknown[];
   isConnected: boolean;
   error: string | null;
   reconnect: () => void;
@@ -24,7 +24,7 @@ export function useSSE({
   onMessage,
   onError,
 }: UseSSEOptions): UseSSEReturn {
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<unknown[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -58,7 +58,7 @@ export function useSSE({
         } catch {
           // Handle non-JSON messages
           setData((prev) => [event.data, ...prev.slice(0, 99)]);
-          onMessage?.(event.data);
+          onMessage?.(event.data as unknown);
         }
       };
 
