@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "dev:proxy": "concurrently \"npm run dev\" \"node server/index.js\"",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
