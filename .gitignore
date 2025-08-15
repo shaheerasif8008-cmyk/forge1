@@ -18,3 +18,5 @@ pgdata/
 *.log
 docker-compose.override.yml
  
+## Azure publish settings (do not commit secrets)
+*.PublishSettings
