@@ -12,14 +12,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Backend SBOM (CycloneDX JSON)
-        uses: anchore/sbom-action@v0.17.6
+        uses: anchore/sbom-action@v0.20.5
         with:
           path: backend
           format: cyclonedx-json
           output-file: sbom-backend.cdx.json
 
       - name: Frontend SBOM (CycloneDX JSON)
-        uses: anchore/sbom-action@v0.17.6
+        uses: anchore/sbom-action@v0.20.5
         with:
           path: frontend
           format: cyclonedx-json
