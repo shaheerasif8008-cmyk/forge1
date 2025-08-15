@@ -5,6 +5,7 @@ import { AuthProvider } from "@/lib/auth";
 import { QueryProvider } from "@/providers/query-provider";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { Toaster } from "react-hot-toast";
+import TopNavClient from "@/components/TopNavClient";
 
 const inter = Inter({ 
   subsets: ["latin"],
@@ -26,17 +27,17 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const envLabel = process.env.NEXT_PUBLIC_ENV_LABEL || "";
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="light"
-          enableSystem
-          disableTransitionOnChange
-        >
+        <ThemeProvider>
           <QueryProvider>
             <AuthProvider>
+              {envLabel && (
+                <div className="w-full text-center text-xs py-1 bg-warning text-black">{envLabel}</div>
+              )}
+              <TopNavClient />
               {children}
               <Toaster
                 position="top-right"

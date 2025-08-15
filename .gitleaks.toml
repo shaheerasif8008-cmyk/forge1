@@ -1,0 +1,11 @@
+# Minimal config: redact matches; allow local dev placeholders
+[rules]
+
+[allowlist]
+  description = "allow local placeholders"
+  regexes = [
+    "change-me",
+    "YOUR-SECURE-SECRET",
+    "example_key",
+  ]
+

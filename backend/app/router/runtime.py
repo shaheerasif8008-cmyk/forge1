@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import random
 from typing import Any, Iterable, Optional
+import httpx
 
 from redis import Redis
 from sqlalchemy.orm import Session
 
 from ..core.config import settings
+from ..interconnect import get_interconnect
 from ..db.models import RouterMetric
 from ..db.session import SessionLocal
 from .policy import RouterPolicy
@@ -185,5 +187,62 @@ class ThompsonRouter:
         )
         db.execute(stmt)
         db.commit()
+
+
+# ---------------- Multi-region helpers ----------------
+
+
+def _parse_region_map(raw: str) -> dict[str, dict[str, Any]]:
+    try:
+        return json.loads(raw or "{}")
+    except Exception:
+        return {}
+
+
+async def choose_region_for_request(path: str, *, prefer_cheapest_for_non_critical: bool = True) -> str | None:
+    if not settings.multi_region_routing_enabled:
+        return None
+    regions = _parse_region_map(settings.region_map)
+    if not regions:
+        return None
+    # Filter healthy regions via Interconnect heartbeat keys
+    ic = await get_interconnect()
+    healthy: list[tuple[str, dict[str, Any]]] = []
+    for name, info in regions.items():
+        try:
+            if await ic.get_region_health(name):
+                healthy.append((name, info))
+        except Exception:
+            continue
+    if not healthy:
+        return None
+    # Determine criticality by path prefix membership
+    non_critical_prefixes = [p.strip() for p in settings.non_critical_path_prefixes.split(",") if p.strip()]
+    is_non_critical = any(path.startswith(p) for p in non_critical_prefixes)
+    if prefer_cheapest_for_non_critical and is_non_critical:
+        healthy.sort(key=lambda x: float(x[1].get("cost_index", 1.0)))
+        return healthy[0][0]
+    return healthy[0][0]
+
+
+async def forward_request_to_region(region: str, method: str, path: str, *, headers: dict[str, str], json_body: Any | None) -> tuple[int, dict[str, Any] | str]:
+    regions = _parse_region_map(settings.region_map)
+    info = regions.get(region)
+    if not info:
+        return 503, {"error": "region_not_configured"}
+    base_url = str(info.get("base_url", "")).rstrip("/")
+    if not base_url:
+        return 503, {"error": "region_url_missing"}
+    url = base_url + path
+    timeout = float(info.get("timeout_secs", 10.0))
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            resp = await client.request(method.upper(), url, headers=headers, json=json_body)
+            ct = resp.headers.get("content-type", "")
+            if "application/json" in ct:
+                return resp.status_code, resp.json()
+            return resp.status_code, resp.text
+        except Exception as e:  # noqa: BLE001
+            return 503, {"error": str(e)}
 
 

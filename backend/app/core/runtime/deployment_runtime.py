@@ -24,6 +24,9 @@ from ..telemetry.metrics_service import MetricsService, TaskMetrics
 from ...interconnect import get_interconnect
 from ...shadow.dispatcher import should_shadow, tee_and_record
 from ...shadow.differ import semantic_diff_score
+from ..quality.feedback_loop import choose_best_strategy
+from ...db.session import SessionLocal
+from ...db.models import PerformanceSnapshot, EmployeeVersion
 
 
 class DeploymentRuntime:
@@ -108,7 +111,7 @@ class DeploymentRuntime:
 
             rag = RAGEngine(vector_store=None, retriever=_NoopRetriever(), reranker=None)
 
-        self.orchestrator = AIOrchestrator(rag_engine=rag)
+        self.orchestrator = AIOrchestrator(rag_engine=rag, employee_config=self.config)
         self.logger.info("DeploymentRuntime orchestrator built")
         return self.orchestrator
 
@@ -135,6 +138,9 @@ class DeploymentRuntime:
 
         role = self.config["role"]
         rag_cfg = self.config.get("rag", {})
+        defaults = (self.config.get("defaults") or {}) if isinstance(self.config.get("defaults"), dict) else {}
+        # Allow prompt/tool strategies from config
+        strategy = (self.config.get("strategy") or {}).copy() if isinstance(self.config.get("strategy"), dict) else {}
 
         run_ctx: dict[str, Any] = {
             "task_type": self.config.get("task_type", "general"),
@@ -142,18 +148,32 @@ class DeploymentRuntime:
             "rag_top_k": int(rag_cfg.get("top_k", 5)),
             "tools": list(self._loaded_tools.keys()),
             "role": {"name": role.get("name"), "description": role.get("description")},
+            # pass through optional defaults/strategy to orchestrator
+            "prompt_prefix": str(defaults.get("prompt_prefix", "")),
+            "router": (self.config.get("router") or {}),
+            "tool_strategy": strategy.get("tools"),
+            "prompt_variants": strategy.get("prompt_variants"),
         }
         if context:
             run_ctx.update(context)
 
         results: list[TaskResult] = []
         prompt = seed_task
-        for _i in range(max(1, iterations)):
+        # If multiple prompt variants are provided, we try them across iterations and later pick best
+        variants = run_ctx.get("prompt_variants") if isinstance(run_ctx.get("prompt_variants"), list) else []
+        trial_metrics: list[dict[str, Any]] = []
+        for idx in range(max(1, iterations)):
             # propagate trace id to context for each iteration
             trace_id = get_trace_id()
             if trace_id:
                 run_ctx.setdefault("trace_id", trace_id)
             self.logger.info("DeploymentRuntime iteration start")
+            # Rotate through variants if provided
+            if variants:
+                try:
+                    run_ctx["prompt_variants"] = [variants[idx % len(variants)]]
+                except Exception:
+                    pass
             res = await self.orchestrator.run_task(prompt, context=run_ctx)
             # Shadow canary tee (best-effort, optional)
             try:
@@ -213,5 +233,96 @@ class DeploymentRuntime:
             if not res.success:
                 break
             # In a richer runtime, update `prompt` or `run_ctx` here.
+            # Collect per-iteration metrics for self-tuning snapshot
+            try:
+                trial_metrics.append({
+                    "success": bool(res.success),
+                    "latency_ms": int(res.execution_time * 1000),
+                    "cost_cents": int(res.metadata.get("cost_cents", 0)),
+                    "prompt_variant": (run_ctx.get("prompt_variants") or [None])[0],
+                })
+            except Exception:
+                pass
         self.logger.info("DeploymentRuntime completed")
+
+        # Persist a performance snapshot comparing tried variants if any
+        try:
+            tenant_id = str(run_ctx.get("tenant_id", ""))
+            employee_id = str(run_ctx.get("employee_id", ""))
+            if employee_id and trial_metrics:
+                tasks = len(trial_metrics)
+                successes = sum(1 for t in trial_metrics if t.get("success"))
+                avg_latency = (sum(int(t.get("latency_ms", 0)) for t in trial_metrics) / tasks) if tasks else None
+                avg_cost = (sum(int(t.get("cost_cents", 0)) for t in trial_metrics) / tasks) if tasks else None
+                best = choose_best_strategy([
+                    {
+                        "success_ratio": (successes / tasks) if tasks else 0.0,
+                        "avg_latency_ms": avg_latency,
+                        "avg_cost_cents": avg_cost,
+                        "config": {"prompt_variant": t.get("prompt_variant")},
+                    }
+                    for t in trial_metrics
+                ])
+                with SessionLocal() as db:
+                    # Best-effort: resolve active version id from employee if present
+                    ver_id = None
+                    try:
+                        from ...db.models import Employee, EmployeeVersion
+                        e = db.get(Employee, employee_id)
+                        ver_id = int(e.active_version_id) if e and e.active_version_id else None
+                    except Exception:
+                        ver_id = None
+                    MetricsService().snapshot_performance(
+                        db,
+                        employee_id=employee_id,
+                        employee_version_id=ver_id,
+                        strategy="prompt_variant",
+                        window_start=None,
+                        window_end=None,
+                        tasks=tasks,
+                        successes=successes,
+                        avg_latency_ms=avg_latency,
+                        p95_latency_ms=None,
+                        avg_cost_cents=avg_cost,
+                        metrics={"best": best},
+                    )
+                    # Auto-tune: if enabled in config.defaults, promote best prompt_variant into active config
+                    try:
+                        if best and isinstance(self.config.get("defaults"), dict) and bool(self.config.get("defaults", {}).get("auto_tune", False)):
+                            best_variant = (best.get("config") or {}).get("prompt_variant")
+                            if isinstance(best_variant, str) and best_variant.strip():
+                                # Build next version snapshot
+                                # Determine next version
+                                EmployeeVersion.__table__.create(bind=db.get_bind(), checkfirst=True)
+                                last = (
+                                    db.query(EmployeeVersion)
+                                    .filter(EmployeeVersion.employee_id == employee_id)
+                                    .order_by(EmployeeVersion.version.desc())
+                                    .first()
+                                )
+                                next_version = int((last.version if last else 0) + 1)
+                                # Merge config
+                                cfg = dict(e.config or {})
+                                dfl = dict((cfg.get("defaults") or {}))
+                                dfl["prompt_prefix"] = str(best_variant)
+                                cfg["defaults"] = dfl
+                                ver = EmployeeVersion(
+                                    employee_id=employee_id,
+                                    version=next_version,
+                                    parent_version_id=(last.id if last else None),
+                                    status="active",
+                                    notes="auto_tune: promote best prompt_variant",
+                                    config=cfg,
+                                )
+                                db.add(ver)
+                                db.flush()
+                                # Update employee
+                                e.config = cfg
+                                e.active_version_id = int(ver.id)
+                                db.add(e)
+                                db.commit()
+                    except Exception:
+                        db.rollback()
+        except Exception:
+            pass
         return results

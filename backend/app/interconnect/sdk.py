@@ -94,6 +94,18 @@ class Interconnect:
             stop_event=stop_event,
         )
 
+    # ----- Region health (simple heartbeat) -----
+    async def set_region_health(self, region: str, healthy: bool, ttl_secs: int = 15) -> None:
+        cli = await self.client()
+        key = f"region:health:{region}"
+        await cli.set(key, b"1" if healthy else b"0", ex=ttl_secs)
+
+    async def get_region_health(self, region: str) -> bool:
+        cli = await self.client()
+        key = f"region:health:{region}"
+        val = await cli.get(key)
+        return bool(val == b"1")
+
     # ----- RPC API -----
     async def rpc_call(
         self,

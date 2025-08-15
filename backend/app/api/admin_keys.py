@@ -14,6 +14,7 @@ from ..db.session import get_session
 from ..core.config import settings
 from ..core.security.employee_keys import generate_key_pair
 from uuid import uuid4
+from ..core.bus import publish as bus_publish
 
 router = APIRouter(prefix="/admin/keys", tags=["admin-keys"])
 router_admin_employees = APIRouter(prefix="/admin/employees", tags=["admin-keys"])
@@ -113,6 +114,20 @@ def _create_employee_key_impl(
     )
     db.add(key_row)
     db.commit()
+    try:
+        import asyncio as _asyncio
+        async def _emit():
+            await bus_publish({
+                "type": "key.created",
+                "tenant_id": e.tenant_id,
+                "employee_id": e.id,
+                "user_id": str(user.get("user_id")),
+                "source": "api",
+                "data": {"key_id": key_row.id},
+            })
+        _asyncio.create_task(_emit())
+    except Exception:
+        pass
     return KeyCreateResponse(prefix=prefix, secret_once=secret_once, key_id=key_row.id)
 
 

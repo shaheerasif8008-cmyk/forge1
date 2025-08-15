@@ -1,0 +1,21 @@
+{
+	"navigationFallback": {
+		"rewrite": "/index.html",
+		"exclude": [
+			"*.{css,js,ico,png,svg,jpg,jpeg,gif,webp}",
+			"/assets/*",
+			"/favicon.ico"
+		]
+	},
+	"responseOverrides": {
+		"404": {
+			"rewrite": "/index.html",
+			"statusCode": 200
+		}
+	},
+	"globalHeaders": {
+		"X-Frame-Options": "SAMEORIGIN",
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy": "strict-origin-when-cross-origin"
+	}
+}

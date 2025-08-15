@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..api.auth import get_current_user
@@ -17,12 +18,14 @@ from ..core.runtime.deployment_runtime import DeploymentRuntime
 from ..core.logging_config import get_trace_id
 from ..core.telemetry.metrics_service import MetricsService
 from ..core.security.rate_limit import increment_and_check
-from ..db.models import AuditLog, Employee, TaskExecution, Tenant
+from ..db.models import AuditLog, Employee, TaskExecution, Tenant, EmployeeVersion, PerformanceSnapshot
+from ..core.quality.guards import idempotency_check_and_store, idempotency_store_response
 from ..db.session import engine, get_session
 from ..db.models import TaskExecution
 from ..core.telemetry.timeline import normalize_events
 from ..interconnect import get_interconnect
 from ..interconnect.cloudevents import make_event
+from ..core.bus import publish as bus_publish
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 logger = logging.getLogger(__name__)
@@ -41,6 +44,7 @@ class EmployeeOut(BaseModel):
     tenant_id: str
     owner_user_id: int | None
     config: dict[str, Any]
+    active_version_id: int | None = None
 
 
 class EmployeePerformanceOut(BaseModel):
@@ -54,6 +58,48 @@ class EmployeePerformanceOut(BaseModel):
 def _require_same_tenant(record_tenant: str, req_tenant: str) -> None:
     if record_tenant != req_tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+class Page(BaseModel):
+    items: list[EmployeeOut]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("", response_model=Page)
+def list_employees_page(
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+    page: int = Query(default=1, ge=1, le=1000),
+    page_size: int = Query(default=20, ge=1, le=1000),
+    q: str = Query(default=""),
+) -> Page:
+    from sqlalchemy import or_
+    page_size_clamped = min(int(page_size), 100)
+    base = db.query(Employee).filter(Employee.tenant_id == current_user["tenant_id"])
+    if q:
+        like = f"%{q}%"
+        base = base.filter(or_(Employee.name.ilike(like), Employee.id.ilike(like)))
+    total = base.count()
+    rows = (
+        base.order_by(Employee.created_at.desc())
+        .offset((int(page) - 1) * page_size_clamped)
+        .limit(page_size_clamped)
+        .all()
+    )
+    items = [
+        EmployeeOut(
+            id=row.id,
+            name=row.name,
+            tenant_id=row.tenant_id,
+            owner_user_id=row.owner_user_id,
+            config=row.config,
+            active_version_id=row.active_version_id,
+        )
+        for row in rows
+    ]
+    return Page(items=items, total=int(total), page=int(page), page_size=int(page_size_clamped))
 
 
 @router.get("/", response_model=list[EmployeeOut])
@@ -74,6 +120,7 @@ def list_employees(
             tenant_id=row.tenant_id,
             owner_user_id=row.owner_user_id,
             config=row.config,
+            active_version_id=row.active_version_id,
         )
         for row in rows
     ]
@@ -82,9 +129,22 @@ def list_employees(
 @router.post("/", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
 def create_employee(
     payload: EmployeeIn,
+    request: Request,
     current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
     db: Session = Depends(get_session),  # noqa: B008
 ) -> EmployeeOut:
+    # Idempotency: dedupe by header key + payload fingerprint
+    try:
+        import json as _json
+        idem_key = request.headers.get("X-Idempotency-Key")
+        fp = _json.dumps({"name": payload.name, "role_name": payload.role_name, "description": payload.description, "tools": payload.tools}, sort_keys=True)
+        dup, resp_key = idempotency_check_and_store(tenant_id=current_user.get("tenant_id"), key=idem_key, request_fingerprint=fp)
+        # If duplicate and we had stored response, return it (best-effort) — not implemented fetch here
+        if dup and resp_key is None:
+            # Fall through to natural upsert-style behavior (409 on exists)
+            pass
+    except Exception:
+        pass
     # Rate limit employee creation
     try:
         ok = increment_and_check(
@@ -125,8 +185,24 @@ def create_employee(
             tables = set(insp.get_table_names())
             if "tenants" not in tables:
                 Tenant.__table__.create(bind=engine, checkfirst=True)
+            # Create version table before employees to satisfy FK in dev/CI
+            try:
+                from ..db.models import EmployeeVersion as _EV
+                if "employee_versions" not in tables:
+                    _EV.__table__.create(bind=engine, checkfirst=True)
+            except Exception:
+                pass
             if "employees" not in tables:
                 Employee.__table__.create(bind=engine, checkfirst=True)
+            else:
+                # If the table exists but new columns don't, add them best-effort for tests/dev
+                try:
+                    cols = {c.get("name") for c in insp.get_columns("employees")}
+                    if "active_version_id" not in cols:
+                        with engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS active_version_id INTEGER"))
+                except Exception:
+                    pass
         except Exception:
             pass
         existing = db.get(Employee, eid)
@@ -173,12 +249,25 @@ def create_employee(
                 actor="api",
                 data={"name": row.name},
             )
+            await bus_publish({
+                "type": "employee.created",
+                "tenant_id": row.tenant_id,
+                "employee_id": row.id,
+                "source": "api",
+                "data": {"name": row.name},
+            })
         asyncio.create_task(_publish())
     except Exception:
         pass
-    return EmployeeOut(
+    out = EmployeeOut(
         id=row.id, name=row.name, tenant_id=row.tenant_id, owner_user_id=row.owner_user_id, config=row.config
     )
+    # Store idempotent response for later duplicates (best-effort)
+    try:
+        idempotency_store_response(tenant_id=current_user.get("tenant_id"), key=request.headers.get("X-Idempotency-Key"), response_payload=out.model_dump())
+    except Exception:
+        pass
+    return out
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)
@@ -192,7 +281,12 @@ def get_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     _require_same_tenant(row.tenant_id, current_user["tenant_id"])
     return EmployeeOut(
-        id=row.id, name=row.name, tenant_id=row.tenant_id, owner_user_id=row.owner_user_id, config=row.config
+        id=row.id,
+        name=row.name,
+        tenant_id=row.tenant_id,
+        owner_user_id=row.owner_user_id,
+        config=row.config,
+        active_version_id=row.active_version_id,
     )
 
 
@@ -230,6 +324,8 @@ async def execute_employee(
     ctx = dict(payload.context or {})
     ctx.setdefault("tenant_id", current_user["tenant_id"])
     ctx.setdefault("employee_id", row.id)
+    # Allow ad-hoc prompt variants via API for experimentation
+    # Example: context: { "prompt_variants": ["You are concise.", "Follow chain-of-thought only internally."] }
     results = await runtime.start(payload.task, iterations=payload.iterations or 1, context=ctx)
     # Persist basic execution log
     try:
@@ -246,6 +342,7 @@ async def execute_employee(
                 execution_time=int(r.execution_time * 1000),
                 success=bool(r.success),
                 error_message=r.error,
+                cost_cents=int(r.metadata.get("cost_cents", 0)),
                 task_data="",
             )
             db.add(exec_row)
@@ -274,6 +371,173 @@ async def execute_employee(
     if trace_id:
         out["trace_id"] = trace_id
     logger.info("Employee run completed")
+    # Emit bus event
+    try:
+        await bus_publish({
+            "type": "run.requested",
+            "tenant_id": row.tenant_id,
+            "employee_id": row.id,
+            "user_id": str(current_user.get("user_id")),
+            "source": "api",
+            "data": {"task": payload.task[:120]},
+        })
+    except Exception:
+        pass
+    return out
+
+
+class TuneRequest(BaseModel):
+    # Simple tunables: prompt prefix and tool strategy knobs; runtime will pass into orchestrator
+    prompt_prefix: str | None = None
+    tool_strategy: dict[str, Any] | None = None
+    auto_tune: bool | None = None
+    notes: str | None = None
+
+
+class TuneResponse(BaseModel):
+    employee_id: str
+    version_id: int
+    version: int
+    status: str
+
+
+@router.post("/{employee_id}/tune", response_model=TuneResponse)
+def tune_employee(
+    employee_id: str,
+    payload: TuneRequest,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> TuneResponse:
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+
+    # Create a new version snapshot with merged config
+    base_cfg = dict(row.config or {})
+    defaults = dict((base_cfg.get("defaults") or {}))
+    if payload.prompt_prefix is not None:
+        defaults["prompt_prefix"] = payload.prompt_prefix
+    if payload.auto_tune is not None:
+        defaults["auto_tune"] = bool(payload.auto_tune)
+    base_cfg["defaults"] = defaults
+    if payload.tool_strategy is not None:
+        base_cfg["strategy"] = dict(payload.tool_strategy)
+
+    # Compute next version number
+    try:
+        EmployeeVersion.__table__.create(bind=db.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+    last = (
+        db.query(EmployeeVersion)
+        .filter(EmployeeVersion.employee_id == employee_id)
+        .order_by(EmployeeVersion.version.desc())
+        .first()
+    )
+    next_version = int((last.version if last else 0) + 1)
+    ver = EmployeeVersion(
+        employee_id=employee_id,
+        version=next_version,
+        parent_version_id=(last.id if last else None),
+        status="active",
+        notes=(payload.notes or ""),
+        config=base_cfg,
+    )
+    db.add(ver)
+    db.flush()  # assign id
+    # Update employee active_version and config to the new snapshot atomically
+    row.config = base_cfg
+    row.active_version_id = ver.id
+    db.add(row)
+    db.commit()
+    return TuneResponse(employee_id=employee_id, version_id=int(ver.id), version=next_version, status=ver.status)
+
+
+class RollbackResponse(BaseModel):
+    employee_id: str
+    version_id: int
+    version: int
+    status: str
+
+
+@router.post("/{employee_id}/rollback/{version}", response_model=RollbackResponse)
+def rollback_employee(
+    employee_id: str,
+    version: int,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> RollbackResponse:
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+
+    ver = (
+        db.query(EmployeeVersion)
+        .filter(EmployeeVersion.employee_id == employee_id, EmployeeVersion.version == int(version))
+        .first()
+    )
+    if ver is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    # Set active version and replace config
+    row.config = dict(ver.config or {})
+    row.active_version_id = ver.id
+    db.add(row)
+    db.commit()
+    return RollbackResponse(employee_id=employee_id, version_id=int(ver.id), version=int(ver.version), status=str(ver.status))
+
+
+class SnapshotOut(BaseModel):
+    id: int
+    employee_id: str
+    employee_version_id: int | None
+    strategy: str | None
+    tasks: int
+    successes: int
+    avg_latency_ms: float | None
+    p95_latency_ms: float | None
+    avg_cost_cents: float | None
+    created_at: str | None = None
+
+
+@router.get("/{employee_id}/snapshots", response_model=list[SnapshotOut])
+def list_snapshots(
+    employee_id: str,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> list[SnapshotOut]:
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(emp.tenant_id, current_user["tenant_id"])
+    try:
+        PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+    rows = (
+        db.query(PerformanceSnapshot)
+        .filter(PerformanceSnapshot.employee_id == employee_id)
+        .order_by(PerformanceSnapshot.id.desc())
+        .limit(100)
+        .all()
+    )
+    out: list[SnapshotOut] = []
+    for r in rows:
+        out.append(
+            SnapshotOut(
+                id=int(r.id),
+                employee_id=str(r.employee_id),
+                employee_version_id=int(r.employee_version_id) if r.employee_version_id is not None else None,
+                strategy=str(r.strategy) if r.strategy else None,
+                tasks=int(r.tasks or 0),
+                successes=int(r.successes or 0),
+                avg_latency_ms=float(r.avg_latency_ms or 0.0) if r.avg_latency_ms is not None else None,
+                p95_latency_ms=float(r.p95_latency_ms or 0.0) if r.p95_latency_ms is not None else None,
+                avg_cost_cents=float(r.avg_cost_cents or 0.0) if r.avg_cost_cents is not None else None,
+                created_at=r.created_at.isoformat() if r.created_at else None,
+            )
+        )
     return out
 
 

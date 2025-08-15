@@ -98,3 +98,25 @@ def next_fix_plan(score: float, error: str | None, context: dict[str, Any] | Non
     return plan
 
 
+def choose_best_strategy(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the best candidate strategy based on observed metrics.
+
+    Each candidate should include keys like {"success_ratio", "avg_latency_ms", "avg_cost_cents", "config"}.
+    We compute a simple utility score that prefers high success ratio, low latency and low cost.
+    """
+    if not candidates:
+        return None
+    best = None
+    best_score = float("-inf")
+    for c in candidates:
+        sr = float(c.get("success_ratio", 0.0) or 0.0)
+        lat = float(c.get("avg_latency_ms", 1000.0) or 1000.0)
+        cost = float(c.get("avg_cost_cents", 10.0) or 10.0)
+        # Utility: success_ratio weighted strongly, then small penalties for latency and cost
+        score = sr * 100.0 - (lat * 0.01) - (cost * 0.5)
+        if score > best_score:
+            best_score = score
+            best = c
+    return best
+
+

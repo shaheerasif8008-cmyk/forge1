@@ -102,7 +102,7 @@ class OpenAIAdapter(LLMAdapter):
             logger.debug(f"Sending request to OpenAI API: {self._model}")
 
             # Make the API call with small bounded retries and jitter
-            max_retries = int(context.get("retries", 1))
+            max_retries = int(context.get("retries", 2))
             import random as _rand
             delay = 0.25 + _rand.uniform(0, 0.1)
             attempt = 0

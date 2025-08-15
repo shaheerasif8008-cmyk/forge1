@@ -12,6 +12,7 @@ import time
 
 from pydantic import BaseModel, Field
 from ..logging_config import get_trace_id
+from ..llm.model_router import ModelRouter as CostAwareRouter, RouterInputs, TenantPolicy
 from ..telemetry.metrics_service import MetricsService, TaskMetrics
 from ..telemetry.error_inspector import capture_error_snapshot
 from ...router.runtime import ThompsonRouter
@@ -23,6 +24,9 @@ from ...db.session import get_session
 from ...db.models import TaskReview
 from ..logging_config import get_trace_id
 from ...interconnect import get_interconnect
+from ..telemetry.tracing import span as trace_span, mark_ok as trace_ok, mark_error as trace_error
+from ...db.models import ConsensusLog
+from ...db.session import SessionLocal as _SL
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -49,6 +53,10 @@ class TaskContext(BaseModel):
     # Retrieval-augmented generation controls
     use_rag: bool = Field(default=False, description="Whether to use RAG prior to LLM call")
     rag_top_k: int = Field(default=5, description="How many documents to retrieve when using RAG")
+    # Optional prompt prefix/variants for self-tuning
+    prompt_prefix: str | None = None
+    prompt_variants: list[str] | None = None
+    tool_strategy: dict[str, Any] | None = None
 
 
 class TaskResult(BaseModel):
@@ -153,7 +161,7 @@ class ModelRouter:
     def __init__(self, registry: AdapterRegistry):
         self.registry = registry
 
-    def select_model(self, task_type: TaskType, context: TaskContext) -> LLMAdapter | None:
+    def select_model(self, task_type: TaskType, context: 'TaskContext') -> LLMAdapter | None:
         """Select the best model for a given task."""
         available_adapters = self.registry.get_adapters_for_task(task_type)
 
@@ -180,7 +188,9 @@ class AIOrchestrator:
         employee_config: dict[str, Any] | None = None,
     ):
         self.registry = registry or AdapterRegistry()
+        # Keep legacy simple router for fallback; prefer cost-aware router
         self.router = ModelRouter(self.registry)
+        self.cost_router = CostAwareRouter(self.registry)
         self.logger = logging.getLogger(__name__)
         self.rag_engine = rag_engine
         # Circuit breaker states per adapter
@@ -235,6 +245,15 @@ class AIOrchestrator:
                 self.logger.info("Gemini adapter registered successfully")
             except (ImportError, ValueError, RuntimeError) as e:
                 self.logger.info(f"Gemini adapter not enabled: {e}")
+
+            # Register Forge Local model adapter when env present
+            try:
+                from .adapter_local import ForgeLocalAdapter
+                local = ForgeLocalAdapter()
+                self.register_adapter(local)
+                self.logger.info("Forge Local adapter registered successfully")
+            except (ImportError, ValueError, RuntimeError) as e:
+                self.logger.info(f"Forge Local adapter not enabled: {e}")
 
         except (ImportError, ValueError, RuntimeError) as e:
             self.logger.error(f"Error setting up default adapters: {e}")
@@ -314,21 +333,34 @@ class AIOrchestrator:
             )
 
             # Route to appropriate model
-            # Router: if enabled via employee config or tenant policy, use Thompson Sampling
+            # Router: prefer cost/latency aware router with flags; allow admin flag override
             use_router = bool((self.employee_config or {}).get("router", {}).get("enabled", False))
             selected_model = None
             selected_model_name = None
-            if use_router:
-                tenant_id = str((context or {}).get("tenant_id", ""))
-                task_type_name = task_context.task_type
-                router = ThompsonRouter(tenant_id or "default", str(task_type_name))
-                policy_cfg = (self.employee_config or {}).get("router", {}).get("policy", {})
-                policy = RouterPolicy.from_dict(policy_cfg)
-                model_names = [a.model_name for a in self.registry.get_adapters_for_task(task_context.task_type)]
-                choice = router.route(models=model_names, policy=policy)
-                selected_model_name = choice.get("model")
-                if selected_model_name:
-                    selected_model = self.registry.get_adapter(selected_model_name)
+            tenant_id = str((context or {}).get("tenant_id", ""))
+            employee_id = str((context or {}).get("employee_id", "") or "") or None
+            if use_router and tenant_id:
+                tp = TenantPolicy(
+                    max_cents_per_day=None,
+                    max_tokens_per_run=int((context or {}).get("max_tokens", 0) or 0) or None,
+                )
+                ri = RouterInputs(
+                    requested_model=str((context or {}).get("model_name", "") or None),
+                    task_type=task_context.task_type,
+                    tenant_id=tenant_id,
+                    employee_id=employee_id,
+                    tenant_policy=tp,
+                    latency_slo_ms=int((context or {}).get("latency_slo_ms", 0) or 0) or None,
+                    prompt=task,
+                    user_id=str((context or {}).get("user_id", "") or None),
+                    function_name=str((context or {}).get("function_name", "") or None),
+                    tools=list((context or {}).get("tool_calls", []) or []),
+                    estimated_tokens=None,
+                )
+                decision = await self.cost_router.select(ri)
+                if decision is not None:
+                    selected_model = self.registry.get_adapter(decision.model_name)
+                    selected_model_name = decision.model_name
             if not selected_model:
                 selected_model = self.router.select_model(task_context.task_type, task_context)
                 selected_model_name = selected_model.model_name if selected_model else None
@@ -371,7 +403,18 @@ class AIOrchestrator:
                     # Log and continue without RAG
                     self.logger.warning(f"RAG retrieval failed: {e}")
 
-            # Execute task with possibly augmented prompt; trim context and enforce token budgets
+            # Self-tuning: apply optional prompt prefix or try variants selection
+            prompt_candidates: list[str] = []
+            prefix = str((context or {}).get("prompt_prefix", "") or "")
+            if prefix:
+                prompt_candidates.append(prefix + "\n\n" + augmented_prompt)
+            variants = list((context or {}).get("prompt_variants", []) or [])
+            for v in variants:
+                prompt_candidates.append(str(v) + "\n\n" + augmented_prompt)
+            if not prompt_candidates:
+                prompt_candidates = [augmented_prompt]
+
+            # Execute task with selected/first candidate; trim context and enforce token budgets
             execution_context: dict[str, Any] = dict(context or {})
             # Hard caps and defaults
             max_tokens = int(execution_context.get("max_tokens", 2000))
@@ -386,6 +429,22 @@ class AIOrchestrator:
             if used_rag:
                 execution_context["rag_used"] = True
                 execution_context["retrieved_docs"] = retrieved_docs
+            # Strict tenant/employee budget enforcement (pre-flight using estimate)
+            try:
+                from ..quality.guards import check_and_reserve_tokens as _reserve_tokens
+                tenant_id_for_budget = str((context or {}).get("tenant_id", "") or "") or None
+                employee_id_for_budget = str((context or {}).get("employee_id", "") or "") or None
+                reserve_tokens = int(min(max_tokens, estimated_tokens))
+                if reserve_tokens > 0 and not _reserve_tokens(tenant_id_for_budget, employee_id_for_budget, reserve_tokens):
+                    return TaskResult(
+                        success=False,
+                        output="",
+                        model_used=selected_model_name or selected_model.model_name,
+                        execution_time=time.time() - start_time,
+                        error="Budget exceeded",
+                    )
+            except Exception:
+                pass
             # Simple circuit breaker inline to avoid nested loops issues
             name = selected_model.model_name
             threshold = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
@@ -400,20 +459,125 @@ class AIOrchestrator:
             if state["state"] == "OPEN":
                 raise RuntimeError("LLM circuit open; please retry later")
             try:
-                response = await selected_model.generate(augmented_prompt, execution_context)
+                # Prompt cache
+                with trace_span(
+                    name=f"llm:{selected_model.model_name}",
+                    span_type="llm",
+                    trace_id=trace_id,
+                    parent_span_id=None,
+                    tenant_id=str((context or {}).get("tenant_id", "") or None),
+                    employee_id=str((context or {}).get("employee_id", "") or None),
+                    input={"prompt": prompt_candidates[0]},
+                ) as _span_ctx:
+                    cached = await self.cost_router.maybe_get_cached(
+                        model=selected_model.model_name,
+                        function_name=str((context or {}).get("function_name", "") or None),
+                        user_id=str((context or {}).get("user_id", "") or None),
+                        prompt=prompt_candidates[0],
+                        tools=list((context or {}).get("tool_calls", []) or []),
+                    )
+                    if cached is not None:
+                        response = cached
+                    else:
+                        # Resilience ensemble for critical tasks
+                        ensemble = list((context or {}).get("ensemble_models", []) or [])
+                        results: list[tuple[str, dict[str, Any]]] = []
+                        primary_resp = await selected_model.generate(prompt_candidates[0], execution_context)
+                        results.append((selected_model.model_name, primary_resp))
+                        for mname in ensemble[:2]:
+                            alt = self.registry.get_adapter(str(mname))
+                            if not alt:
+                                continue
+                            try:
+                                alt_resp = await alt.generate(prompt_candidates[0], execution_context)
+                                results.append((alt.model_name, alt_resp))
+                            except Exception:
+                                results.append((alt.model_name, {"text": "", "tokens": 0, "error": True}))
+                        if len(results) == 1:
+                            response = primary_resp
+                        else:
+                            from hashlib import sha256
+                            def _norm(t: str) -> str:
+                                return (t or "").strip().lower()
+                            buckets: dict[str, list[int]] = {}
+                            for idx, (_mn, resp) in enumerate(results):
+                                txt = _norm(str(resp.get("text", "")))
+                                h = sha256(txt.encode("utf-8")).hexdigest() if txt else ""
+                                buckets.setdefault(h, []).append(idx)
+                            best_hash, voters = max(buckets.items(), key=lambda kv: len(kv[1])) if buckets else ("", [0])
+                            chosen_idx = voters[0] if voters else 0
+                            response = results[chosen_idx][1]
+                            # Persist consensus log (best-effort)
+                            try:
+                                with _SL() as _db:
+                                    ConsensusLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
+                                    _db.add(
+                                        ConsensusLog(
+                                            tenant_id=str((context or {}).get("tenant_id", "") or None),
+                                            employee_id=str((context or {}).get("employee_id", "") or None),
+                                            task_type=str(task_context.task_type),
+                                            models=[{"model": mn, "ok": not bool(r.get("error")), "latency_ms": None} for mn, r in results],
+                                            agreed=(len(voters) >= 2),
+                                            selected_model=results[chosen_idx][0],
+                                            consensus_k=len(voters),
+                                        )
+                                    )
+                                    _db.commit()
+                            except Exception:
+                                pass
+                        await self.cost_router.store_cache(
+                            model=selected_model.model_name,
+                            function_name=str((context or {}).get("function_name", "") or None),
+                            user_id=str((context or {}).get("user_id", "") or None),
+                            prompt=prompt_candidates[0],
+                            tools=list((context or {}).get("tool_calls", []) or []),
+                            response=response,
+                        )
+                    try:
+                        trace_ok(_span_ctx, output={"tokens": response.get("tokens", 0)})
+                    except Exception:
+                        pass
+                await self.cost_router.record_provider_success(selected_model.model_name)
                 state["failures"] = 0
                 if state["state"] == "HALF_OPEN":
                     state["state"] = "CLOSED"
-            except Exception:
+            except Exception as _e:
+                # Dead-letter queue routing for failed generation (best-effort)
+                try:
+                    import asyncio as _asyncio
+                    async def _emit_dlq():
+                        ic = await get_interconnect()
+                        await ic.publish(
+                            stream="events.tasks",
+                            type="task.generate_failed",
+                            source="orchestrator",
+                            data={"error": str(_e)},
+                            trace_id=get_trace_id(),
+                        )
+                    _asyncio.create_task(_emit_dlq())
+                except Exception:
+                    pass
+                await self.cost_router.record_provider_failure(selected_model.model_name)
                 state["failures"] += 1
                 if state["state"] == "HALF_OPEN" or state["failures"] >= state["threshold"]:
                     state["state"] = "OPEN"
                     state["last_trip"] = now
+                try:
+                    trace_error(_span_ctx, str(_e))  # type: ignore[name-defined]
+                except Exception:
+                    pass
                 raise
 
             # Extract text from response dict
             output = response.get("text", "")
             tokens = response.get("tokens", 0)
+            # Approximate cost in cents from router pricing map
+            try:
+                from ..llm.model_router import _provider_of, _cost_cents_for_tokens
+                provider = _provider_of(selected_model.model_name)
+                cost_cents = int(_cost_cents_for_tokens(provider, int(tokens or 0)))
+            except Exception:
+                cost_cents = int((tokens or 0) * 0.02)
 
             execution_time = time.time() - start_time
             self.logger.info(
@@ -431,13 +595,14 @@ class AIOrchestrator:
                     "estimated_tokens": estimated_tokens,
                     "rag_used": used_rag,
                     "retrieved_docs_count": len(retrieved_docs),
+                    "cost_cents": cost_cents,
                 },
             )
             # Ledger: record token and cost usage (nominal cost using token proxy)
             try:
                 with SessionLocal() as db:
                     token_amt = int(tokens or 0)
-                    cost_cents = int((tokens or 0) * 0.02)  # placeholder conversion
+                    cost_cents = int(cost_cents)
                     if token_amt > 0:
                         ledger_post(
                             db,
@@ -471,7 +636,7 @@ class AIOrchestrator:
                         model_name=selected_model_name,
                         success=True,
                         latency_ms=execution_time * 1000.0,
-                        cost_cents=float(tokens or 0) * 0.0002,  # naive cost
+                        cost_cents=float(cost_cents),
                     )
             except Exception:
                 pass
@@ -492,7 +657,7 @@ class AIOrchestrator:
                             success=True,
                             latency_ms=int(execution_time * 1000),
                         )
-                    )
+                        )
                     _db.commit()
             except Exception:
                 pass

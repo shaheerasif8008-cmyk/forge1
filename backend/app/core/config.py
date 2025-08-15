@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     max_tokens_per_req: int = Field(default=2048, alias="MAX_TOKENS_PER_REQ")
     llm_timeout_secs: float = Field(default=45.0, alias="LLM_TIMEOUT_SECS")
+    prompt_cache_ttl_secs: int = Field(default=300, alias="PROMPT_CACHE_TTL_SECS")
+    # Cost config (cents per 1k tokens)
+    openai_1k_token_cost_cents: int = Field(default=10, alias="OPENAI_1K_TOKEN_COST_CENTS")
+    claude_1k_token_cost_cents: int = Field(default=16, alias="CLAUDE_1K_TOKEN_COST_CENTS")
+    gemini_1k_token_cost_cents: int = Field(default=8, alias="GEMINI_1K_TOKEN_COST_CENTS")
+    openrouter_1k_token_cost_cents: int = Field(default=9, alias="OPENROUTER_1K_TOKEN_COST_CENTS")
+    # Router fallback order
+    router_fallback_order: str = Field(default="openrouter,openai,claude,gemini", alias="ROUTER_FALLBACK_ORDER")
     # Feedback loop & retries
     feedback_max_retries: int = Field(default=1, alias="FEEDBACK_MAX_RETRIES")
     retry_score_threshold: float = Field(default=0.55, alias="RETRY_SCORE_THRESHOLD")
@@ -49,6 +57,15 @@ class Settings(BaseSettings):
     # Interconnect / AI Comms features
     interconnect_enabled: bool = Field(default=True, alias="INTERCONNECT_ENABLED")
     ai_comms_dashboard_enabled: bool = Field(default=True, alias="AI_COMMS_DASHBOARD_ENABLED")
+
+    # Multi-region settings
+    region: str = Field(default="local", alias="REGION")
+    multi_region_routing_enabled: bool = Field(default=False, alias="MULTI_REGION_ROUTING_ENABLED")
+    # JSON string: {"azure-eastus": {"base_url": "https://azure.example.com", "cost_index": 1.0}, ...}
+    region_map: str = Field(default="{}", alias="REGION_MAP")
+    region_health_ttl_secs: int = Field(default=15, alias="REGION_HEALTH_TTL_SECS")
+    # CSV prefixes considered non-critical (eligible for cost-based routing)
+    non_critical_path_prefixes: str = Field(default="/api/v1/employees,/api/v1/ai/execute", alias="NON_CRITICAL_PATH_PREFIXES")
 
 
 settings = Settings()

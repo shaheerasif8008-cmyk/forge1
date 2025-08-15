@@ -1,0 +1,7 @@
+@import 'tailwindcss';
+:root { --radius: 1rem; }
+@theme inline { --radius: var(--radius); }
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+
+

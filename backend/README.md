@@ -188,6 +188,24 @@ The backend includes adapters for multiple AI providers:
 - **Anthropic Claude**: Creative and analytical tasks
 - **Google Gemini**: Code generation and analysis
 
+### Model Routing Matrix
+
+The cost/latency-aware router considers provider availability, circuit-breaker state, admin overrides, and a simple score combining estimated cost and latency p95. Approximate mapping of capabilities:
+
+| Task Type | OpenRouter | OpenAI | Claude | Gemini |
+|-----------|-----------:|-------:|-------:|-------:|
+| general | ✓ | ✓ | ✓ | ✓ |
+| code_generation | ✓ | ✓ | ✓ | ✓ |
+| analysis | ✓ | ✓ | ✓ | ✓ |
+| creative | ✓ | ✓ | ✓ | ✓ |
+| review | ✓ | ✓ | ✓ | ✓ |
+
+Admin overrides (feature flags, per-tenant):
+- Force provider: `router.force_provider_openrouter|openai|claude|gemini`
+- Disable provider: `router.disable_provider_openrouter|openai|claude|gemini`
+
+Latency SLO can be passed per request via `context.latency_slo_ms`; the router penalizes providers whose p95 exceeds the SLO.
+
 To enable AI models, set the corresponding API keys in your `.env` file.
 
 ## Project Structure
@@ -222,6 +240,14 @@ backend/
 | `ANTHROPIC_API_KEY` | Anthropic key for LLMs | - |
 | `GOOGLE_AI_API_KEY` | Google Generative AI key | - |
 | `PGVECTOR` | Ensure pgvector extension is enabled in Postgres | - |
+| `PROMPT_CACHE_TTL_SECS` | TTL for prompt cache entries (seconds) | `300` |
+| `OPENAI_1K_TOKEN_COST_CENTS` | Approximate cost per 1k tokens for OpenAI (cents) | `10` |
+| `CLAUDE_1K_TOKEN_COST_CENTS` | Approximate cost per 1k tokens for Claude (cents) | `16` |
+| `GEMINI_1K_TOKEN_COST_CENTS` | Approximate cost per 1k tokens for Gemini (cents) | `8` |
+| `OPENROUTER_1K_TOKEN_COST_CENTS` | Approximate cost per 1k tokens for OpenRouter (cents) | `9` |
+| `ROUTER_FALLBACK_ORDER` | Fallback provider order | `openrouter,openai,claude,gemini` |
+| `CIRCUIT_BREAKER_THRESHOLD` | Failures before circuit opens | `3` |
+| `CIRCUIT_BREAKER_COOLDOWN_SECS` | Cooldown before half-open | `60` |
 
 ## Contributing
 

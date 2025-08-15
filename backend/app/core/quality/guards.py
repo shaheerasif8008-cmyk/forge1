@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional at runtime
     Redis = None  # type: ignore
 
 _inmem_store: dict[str, int] = {}
+_inmem_idem: dict[str, tuple[int, str]] = {}
 
 # Strict tool allowlist for internal AIs
 ALLOWED_INTERNAL_TOOLS = {
@@ -82,8 +83,9 @@ def check_and_reserve_tokens(tenant_id: str | None, employee_id: str | None, tok
     # Check tenant cap first (if configured)
     tenant_key = _daily_key("budget:tokens:tenant", tenant_id) if tenant_id else None
     employee_key = _daily_key("budget:tokens:employee", employee_id) if employee_id else None
-    # For now only employee/global cap is enforced; tenant cap placeholder remains None
-    tenant_cap = None
+    # Tenant cap via env (optional)
+    tenant_cap_env = os.getenv("TENANT_DAILY_TOKENS_CAP")
+    tenant_cap = int(tenant_cap_env) if tenant_cap_env and tenant_cap_env.isdigit() else None
     # Determine cap: explicit employee cap first; otherwise global default cap
     emp_cap = _employee_daily_cap(employee_id)
     if emp_cap is None:
@@ -104,7 +106,7 @@ def check_and_reserve_tokens(tenant_id: str | None, employee_id: str | None, tok
             idx = 0
             if tenant_key:
                 tenant_current = int(results[idx]); idx += 2
-            if tenant_cap is not None and tenant_current > tenant_cap:
+            if tenant_cap is not None and tenant_current is not None and tenant_current > tenant_cap:
                     # Roll back tenant inc
                     try:
                         r.decrby(tenant_key, tokens)
@@ -163,5 +165,54 @@ def check_and_reserve_tokens(tenant_id: str | None, employee_id: str | None, tok
 def enforce_tool_allowlist(tool_name: str) -> bool:
     """Return True if the tool is allowed for internal AIs."""
     return tool_name in ALLOWED_INTERNAL_TOOLS
+
+
+def idempotency_check_and_store(*, tenant_id: str | None, key: str | None, request_fingerprint: str, ttl_seconds: int = 24 * 3600) -> tuple[bool, str | None]:
+    """Idempotency helper for write endpoints.
+
+    Returns (is_duplicate, stored_response_key). If duplicate and response key present,
+    the caller can fetch a cached response by that key to return immediately.
+    """
+    if not key:
+        return (False, None)
+    now = int(time.time())
+    r = _redis()
+    redis_key = f"idem:{tenant_id or 'global'}:{key}"
+    try:
+        if r is not None:
+            prev = r.hget(redis_key, "fp")
+            if prev is not None and str(prev) == request_fingerprint:
+                resp_key = r.hget(redis_key, "resp_key")
+                return (True, str(resp_key) if resp_key else None)
+            pipe = r.pipeline()
+            pipe.hset(redis_key, mapping={"fp": request_fingerprint, "ts": str(now)})
+            pipe.expire(redis_key, ttl_seconds, nx=True)
+            pipe.execute()
+            return (False, None)
+    except Exception:
+        pass
+    # In-memory fallback (process-scoped)
+    prev = _inmem_idem.get(redis_key)
+    if prev and prev[1] == request_fingerprint:
+        return (True, None)
+    _inmem_idem[redis_key] = (now, request_fingerprint)
+    return (False, None)
+
+
+def idempotency_store_response(*, tenant_id: str | None, key: str | None, response_payload: dict[str, Any], ttl_seconds: int = 24 * 3600) -> None:
+    if not key:
+        return
+    r = _redis()
+    store_key = f"idemr:{tenant_id or 'global'}:{key}"
+    try:
+        if r is not None:
+            import json as _json
+            r.setex(store_key, ttl_seconds, _json.dumps(response_payload))
+            r.hset(f"idem:{tenant_id or 'global'}:{key}", "resp_key", store_key)
+            return
+    except Exception:
+        pass
+    # best-effort fallback marker
+    _inmem_store[store_key] = 1
 
 

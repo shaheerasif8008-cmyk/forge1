@@ -1,0 +1,28 @@
+role:
+  name: Law Office AI
+  description: Assists with legal research, drafting, and compliance checks with conservative tone.
+required_tools:
+  - web_scraper
+  - keyword_extractor
+  - api_caller
+rag:
+  enabled: true
+  top_k: 8
+  provider: hybrid
+memory:
+  short_term:
+    provider: redis
+    ttl: 7200
+  long_term:
+    provider: pgvector
+    dimensions: 1536
+defaults:
+  industry: legal
+  prompt_prefix: |
+    You are a meticulous legal assistant. Write in a conservative, precise tone.
+    Include citations where appropriate. Do not provide legal advice.
+policies:
+  require_human_for:
+    - email_send
+    - crm_write
+

@@ -87,11 +87,18 @@ class Employee(Base):
     owner_user_id = Column(Integer, nullable=True, index=True)
     name = Column(String(255), nullable=False)
     config = Column(JSONB, nullable=False, default=dict)
+    # Optional pointer to the active version snapshot for rollback/promotions
+    active_version_id = Column(Integer, ForeignKey("employee_versions.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        Index("ix_employees_tenant_created", "tenant_id", "created_at"),
+        Index("ix_employees_tenant_name", "tenant_id", "name"),
     )
 
     def __repr__(self) -> str:
@@ -117,6 +124,8 @@ class TaskExecution(Base):
     execution_time = Column(Integer, nullable=True)  # in milliseconds
     success = Column(Boolean, default=True)
     error_message = Column(Text, nullable=True)
+    # Approximate API cost for this task in cents (computed from provider/token map)
+    cost_cents = Column(Integer, nullable=True)
     task_data = Column(Text, nullable=True)  # JSON string for additional data
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
@@ -124,6 +133,23 @@ class TaskExecution(Base):
         return (
             f"<TaskExecution(id={self.id}, user_id={self.user_id}, task_type='{self.task_type}')>"
         )
+
+
+class RunFailure(Base):
+    """Failed run metadata to support DLQ replay."""
+
+    __tablename__ = "run_failures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_execution_id = Column(Integer, index=True, nullable=True)
+    tenant_id = Column(String(100), index=True, nullable=True)
+    employee_id = Column(String(100), index=True, nullable=True)
+    reason = Column(Text, nullable=True)
+    payload = Column(JSONB, nullable=True)  # input/context snapshot
+    error = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="queued")  # queued|replayed|ignored
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
 class TaskReview(Base):
@@ -137,6 +163,90 @@ class TaskReview(Base):
     status = Column(String(50), nullable=False, default="scored")  # scored | retry_planned | escalated
     fix_plan = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class TraceSpan(Base):
+    """Span/event for distributed tracing graphs.
+
+    Spans form a tree via parent_span_id. Input/output/error are small JSON snapshots for replay.
+    """
+
+    __tablename__ = "trace_spans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trace_id = Column(String(64), index=True, nullable=False)
+    span_id = Column(String(64), unique=True, index=True, nullable=False)
+    parent_span_id = Column(String(64), index=True, nullable=True)
+
+    tenant_id = Column(String(100), index=True, nullable=True)
+    employee_id = Column(String(100), index=True, nullable=True)
+
+    span_type = Column(String(32), nullable=False)  # task|router|rag|llm|tool|cache|policy|guard
+    name = Column(String(200), nullable=False)
+    status = Column(String(16), nullable=False, default="running")  # running|ok|error
+
+    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    input = Column(JSONB, nullable=True)
+    output = Column(JSONB, nullable=True)
+    error = Column(Text, nullable=True)
+    # Column name can't be 'metadata' to avoid Base.metadata clash
+    meta = Column(JSONB, nullable=True)
+
+    __table_args__ = (
+        Index("ix_trace_spans_trace_parent", "trace_id", "parent_span_id"),
+        Index("ix_trace_spans_tenant_trace", "tenant_id", "trace_id"),
+    )
+
+
+class EmployeeVersion(Base):
+    """Immutable snapshots of `Employee.config` to support tuning and rollback."""
+
+    __tablename__ = "employee_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(String(100), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Monotonic version number per employee (1, 2, 3, ...)
+    version = Column(Integer, nullable=False)
+    parent_version_id = Column(Integer, ForeignKey("employee_versions.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(20), nullable=False, default="active")  # active|canary|retired|candidate
+    notes = Column(Text, nullable=True)
+    config = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "version", name="uq_employee_version"),
+        Index("ix_employee_versions_emp_status", "employee_id", "status"),
+    )
+
+
+class PerformanceSnapshot(Base):
+    """Aggregated performance metrics for an employee or specific version/strategy.
+
+    Used by the self-tuning loop to compare strategies over the same workload window.
+    """
+
+    __tablename__ = "performance_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(String(100), ForeignKey("employees.id", ondelete="CASCADE"), index=True, nullable=False)
+    employee_version_id = Column(Integer, ForeignKey("employee_versions.id", ondelete="SET NULL"), index=True, nullable=True)
+    strategy = Column(String(50), nullable=True)
+    window_start = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
+    tasks = Column(Integer, nullable=False, default=0)
+    successes = Column(Integer, nullable=False, default=0)
+    avg_latency_ms = Column(Float, nullable=True)
+    p95_latency_ms = Column(Float, nullable=True)
+    avg_cost_cents = Column(Float, nullable=True)
+    metrics = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        Index("ix_perf_snap_emp_version", "employee_id", "employee_version_id"),
+    )
 
 
 class Escalation(Base):
@@ -167,6 +277,9 @@ class SupervisorPolicy(Base):
     deny_actions = Column(JSONB, nullable=True, default=list)
     pii_strict = Column(Boolean, nullable=False, default=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    # HITL Controls
+    ghost_mode = Column(Boolean, nullable=False, default=False)
+    pause_high_impact = Column(Boolean, nullable=False, default=True)
 
 class LongTermMemory(Base):
     """Long-term memory stored with vector embeddings for semantic search."""
@@ -695,6 +808,78 @@ class PolicyAudit(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
+# -------------------- HITL (Human-in-the-Loop) --------------------
+
+
+class ActionApproval(Base):
+    __tablename__ = "action_approvals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), index=True, nullable=False)
+    employee_id = Column(String(100), index=True, nullable=True)
+    action = Column(String(100), nullable=False)
+    payload = Column(JSONB, nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
+    reason = Column(Text, nullable=True)
+    decided_by_user = Column(Integer, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+    __table_args__ = (
+        Index("ix_action_approvals_tenant_status", "tenant_id", "status"),
+    )
+
+
+# -------------------- Plugins / App Store --------------------
+
+
+class Plugin(Base):
+    __tablename__ = "plugins"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    author = Column(String(200), nullable=True)
+    homepage = Column(String(512), nullable=True)
+    latest_version = Column(String(50), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # pending|approved|denied
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class PluginVersion(Base):
+    __tablename__ = "plugin_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plugin_id = Column(Integer, ForeignKey("plugins.id", ondelete="CASCADE"), index=True, nullable=False)
+    version = Column(String(50), nullable=False)
+    manifest = Column(JSONB, nullable=False)  # manifest.json contents
+    entry_module = Column(String(200), nullable=False)
+    entry_handler = Column(String(100), nullable=False)
+    permissions = Column(JSONB, nullable=True)  # e.g., {"network": true}
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    __table_args__ = (
+        UniqueConstraint("plugin_id", "version", name="uq_plugin_version"),
+    )
+
+
+class PluginInstall(Base):
+    __tablename__ = "plugin_installs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), index=True, nullable=False)
+    plugin_id = Column(Integer, ForeignKey("plugins.id", ondelete="CASCADE"), index=True, nullable=False)
+    version_id = Column(Integer, ForeignKey("plugin_versions.id", ondelete="SET NULL"), index=True, nullable=True)
+    auto_update = Column(Boolean, nullable=False, default=False)
+    pinned_version = Column(String(50), nullable=True)
+    installed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "plugin_id", name="uq_plugin_install_tenant_plugin"),
+    )
+
+
 # -------------------- Shadow/Canary --------------------
 
 
@@ -728,4 +913,134 @@ class ShadowInvocation(Base):
     primary_output = Column(Text, nullable=True)
     shadow_output = Column(Text, nullable=True)
     score = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+# -------------------- Webhooks --------------------
+
+
+class WebhookEndpoint(Base):
+    __tablename__ = "webhook_endpoints"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False)
+    url = Column(String(1024), nullable=False)
+    secret = Column(String(128), nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    # Optional event type filter; when empty deliver all
+    event_types = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+    __table_args__ = (
+        Index("ix_webhook_tenant_active", "tenant_id", "active"),
+    )
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    endpoint_id = Column(Integer, ForeignKey("webhook_endpoints.id", ondelete="CASCADE"), index=True, nullable=False)
+    tenant_id = Column(String(100), index=True, nullable=False)
+    event_type = Column(String(200), nullable=False)
+    message_id = Column(String(50), nullable=True)  # bus message id used for dedupe
+    payload = Column(JSONB, nullable=False)
+    signature = Column(String(200), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="queued")  # queued|delivered|failed|dlq
+    last_status_code = Column(Integer, nullable=True)
+    last_error = Column(Text, nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "message_id", name="uq_delivery_endpoint_message"),
+        Index("ix_webhook_deliveries_tenant_status", "tenant_id", "status"),
+    )
+
+
+# -------------------- Data Lifecycle Policies --------------------
+
+
+class DataLifecyclePolicy(Base):
+    __tablename__ = "data_lifecycle_policies"
+
+    tenant_id = Column(String(100), primary_key=True, index=True)
+    chat_ttl_days = Column(Integer, nullable=True)  # TaskExecution retention
+    tool_io_ttl_days = Column(Integer, nullable=True)  # AuditLog/tool logs retention
+    pii_redaction_enabled = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+# -------------------- Data Moat / Aggregation & Training --------------------
+
+
+class DataConsent(Base):
+    __tablename__ = "data_consents"
+
+    tenant_id = Column(String(100), primary_key=True, index=True)
+    rag_aggregation_enabled = Column(Boolean, nullable=False, default=False)
+    task_aggregation_enabled = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class AggregatedSample(Base):
+    __tablename__ = "aggregated_samples"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), index=True, nullable=False)
+    industry = Column(String(100), index=True, nullable=True)
+    sample_type = Column(String(20), nullable=False, default="task")  # task|rag
+    prompt_hash = Column(String(64), nullable=True)
+    output_hash = Column(String(64), nullable=True)
+    model_name = Column(String(100), nullable=True)
+    tokens_used = Column(Integer, nullable=True)
+    consent_snapshot = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    __table_args__ = (
+        Index("ix_agg_samples_tenant_type", "tenant_id", "sample_type"),
+    )
+
+
+class TrainingJob(Base):
+    __tablename__ = "training_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_type = Column(String(20), nullable=False)  # embedding|fine_tune
+    industry = Column(String(100), index=True, nullable=True)
+    status = Column(String(20), nullable=False, default="queued")  # queued|running|completed|failed
+    params = Column(JSONB, nullable=True)
+    metrics = Column(JSONB, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class BenchmarkResult(Base):
+    __tablename__ = "benchmark_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    industry = Column(String(100), index=True, nullable=True)
+    task_type = Column(String(50), index=True, nullable=True)
+    model_name = Column(String(100), nullable=False)
+    baseline_model = Column(String(100), nullable=True)
+    score = Column(Float, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    __table_args__ = (
+        Index("ix_benchmark_industry_task", "industry", "task_type"),
+    )
+
+
+class ConsensusLog(Base):
+    __tablename__ = "consensus_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), index=True, nullable=True)
+    employee_id = Column(String(100), index=True, nullable=True)
+    task_type = Column(String(50), nullable=True)
+    models = Column(JSONB, nullable=True)  # [{model, ok, hash, latency_ms}]
+    agreed = Column(Boolean, nullable=False, default=False)
+    selected_model = Column(String(100), nullable=True)
+    consensus_k = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

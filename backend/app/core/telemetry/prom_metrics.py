@@ -23,6 +23,13 @@ TASK_SUCCESS_RATIO = Gauge(
     ["tenant", "employee"],
 )
 
+# Optional tracing: count open spans
+OPEN_SPANS = Gauge(
+    "forge1_open_spans",
+    "Number of open tracing spans per tenant",
+    ["tenant"],
+)
+
 
 def observe_request(route: str, method: str, status_code: int, duration_seconds: float) -> None:
     REQUESTS_TOTAL.labels(route=route, method=method, status=str(status_code)).inc()
@@ -31,5 +38,13 @@ def observe_request(route: str, method: str, status_code: int, duration_seconds:
 
 def set_success_ratio(tenant_id: str, employee_id: str | None, ratio: float) -> None:
     TASK_SUCCESS_RATIO.labels(tenant=tenant_id, employee=str(employee_id or "")).set(max(0.0, min(1.0, ratio)))
+
+
+def incr_open_spans(tenant_id: str) -> None:
+    OPEN_SPANS.labels(tenant=tenant_id).inc()
+
+
+def decr_open_spans(tenant_id: str) -> None:
+    OPEN_SPANS.labels(tenant=tenant_id).dec()
 
 

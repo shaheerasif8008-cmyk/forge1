@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .ai_orchestrator import LLMAdapter, TaskType
 from ..config import settings
-from ..quality.guards import clamp_tokens, check_and_reserve_tokens
+from ..quality.guards import clamp_tokens
 from ..logging_config import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,7 @@ class OpenRouterAdapter(LLMAdapter):
             model = self._resolve_model(requested_model)
             requested_max = int(context.get("max_tokens", getattr(settings, "max_tokens_per_req", 2048)))
             max_tokens = clamp_tokens(requested_max)
-            # Reserve tokens against per-employee daily budget
-            employee_id = str(context.get("employee_id", "") or "") or None
-            if not check_and_reserve_tokens(employee_id, max_tokens):
-                raise RuntimeError("Daily token budget reached for employee")
+            # Budget reservation is handled centrally by orchestrator
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -108,7 +105,7 @@ class OpenRouterAdapter(LLMAdapter):
                 headers["X-Trace-ID"] = trace_id
 
             logger.debug(f"Sending request to OpenRouter: {model}")
-            max_retries = int(context.get("retries", 1))
+            max_retries = int(context.get("retries", 2))
             attempt = 0
             last_exc: Exception | None = None
             # Simple circuit breaker per model route (in-memory/redis)

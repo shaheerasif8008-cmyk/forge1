@@ -132,6 +132,9 @@ class EmployeeBuilder:
         for extra_key in ("policies", "constraints", "defaults"):
             if extra_key in self._template and extra_key not in config:
                 config[extra_key] = self._template[extra_key]
+        # Initialize self-tuning knobs scaffold
+        config.setdefault("defaults", {})
+        config.setdefault("strategy", {"prompt_variants": [], "tools": {}})
         return config
 
     # Internals
@@ -179,6 +182,10 @@ class EmployeeBuilder:
             "sales_agent": "sales_agent",
             "research_assistant": "research_assistant",
             "customer_support": "customer_support",
+            "law_office_ai": "law_office_ai",
+            "e-commerce_growth_ai": "ecommerce_growth_ai",
+            "ecommerce_growth_ai": "ecommerce_growth_ai",
+            "healthcare_compliance_ai": "healthcare_compliance_ai",
         }
         return mapping.get(key, "base")
 

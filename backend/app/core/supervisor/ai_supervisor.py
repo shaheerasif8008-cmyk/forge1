@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ...db.models import SupervisorPolicy
+from ...db.models import SupervisorPolicy, ActionApproval
 from ...db.session import SessionLocal
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -83,8 +83,19 @@ def review_action(action: str, context: dict[str, Any]) -> dict[str, str]:
     if action_name in deny_actions:
         return {"decision": "deny", "reason": "action_denied"}
     if action_name in require_human_for:
+        # Create an approval ticket
+        try:
+            with SessionLocal() as db:
+                ActionApproval.__table__.create(bind=db.get_bind(), checkfirst=True)
+                db.add(ActionApproval(tenant_id=tenant_id, employee_id=str(context.get("employee_id") or ""), action=action_name, payload=context, status="pending"))
+                db.commit()
+        except Exception:
+            pass
         return {"decision": "needs_human", "reason": "human_approval_required"}
 
+    # Ghost mode: do not execute, but log as allowed
+    if policy and bool(policy.ghost_mode):
+        return {"decision": "needs_human", "reason": "ghost_mode"}
     return {"decision": "allow", "reason": "ok"}
 
 

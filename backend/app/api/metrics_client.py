@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..api.auth import get_current_user
 from ..core.telemetry.metrics_service import DailyUsageMetric
 from ..db.session import get_session
+from ..db.models import AuditLog
 
 
 router = APIRouter(prefix="/client/metrics", tags=["metrics-client"])
@@ -89,6 +90,57 @@ def active_employees(
     )
     active = {row[0] for row in q.all() if row[0] is not None}
     return {"active_employees": len(active)}
+
+
+@router.get("/top/templates")
+def top_templates(
+    db: Session = Depends(get_session),  # noqa: B008
+    user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+) -> list[dict[str, int]]:
+    out: dict[str, int] = {}
+    try:
+        rows = db.query(AuditLog).filter(AuditLog.tenant_id == user.get("tenant_id"), AuditLog.action == "employee.created").limit(2000).all()
+        for r in rows:
+            if isinstance(r.meta, dict):
+                data = r.meta.get("data") or {}
+                name = data.get("name")
+                if isinstance(name, str) and name:
+                    out[name] = out.get(name, 0) + 1
+    except Exception:
+        pass
+    return [{"name": k, "count": v} for k, v in sorted(out.items(), key=lambda x: -x[1])]
+
+
+@router.get("/top/tools")
+def top_tools(
+    db: Session = Depends(get_session),  # noqa: B008
+    user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+) -> list[dict[str, int]]:
+    out: dict[str, int] = {}
+    try:
+        rows = db.query(AuditLog).filter(AuditLog.tenant_id == user.get("tenant_id"), AuditLog.action.like("telemetry:%")).limit(5000).all()
+        for r in rows:
+            t = (r.action or "").split(":", 1)[-1]
+            if t:
+                out[t] = out.get(t, 0) + 1
+    except Exception:
+        pass
+    return [{"name": k, "count": v} for k, v in sorted(out.items(), key=lambda x: -x[1])]
+
+
+@router.get("/funnel")
+def funnel(
+    db: Session = Depends(get_session),  # noqa: B008
+    user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+) -> dict[str, int]:
+    created = 0
+    ran = 0
+    try:
+        created = db.query(AuditLog).filter(AuditLog.tenant_id == user.get("tenant_id"), AuditLog.action == "employee.created").count()
+        ran = db.query(AuditLog).filter(AuditLog.tenant_id == user.get("tenant_id"), AuditLog.action == "employees_api", AuditLog.path.like("%/employees/%/run%"), AuditLog.status_code == 200).count()
+    except Exception:
+        pass
+    return {"created": int(created), "ran": int(ran)}
 
 
 

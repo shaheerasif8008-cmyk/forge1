@@ -139,6 +139,8 @@ az containerapp create \
     DATABASE_URL=secretref:DATABASE-URL@$KV \
     REDIS_URL=secretref:REDIS-URL@$KV \
     BACKEND_CORS_ORIGINS=secretref:BACKEND-CORS-ORIGINS@$KV \
+    AI_COMMS_DASHBOARD_ENABLED=true \
+    INTERCONNECT_ENABLED=true \
   -o none || az containerapp update \
   -g "$RG" -n "$APP_NAME" \
   --image "$IMAGE" \
@@ -150,6 +152,8 @@ az containerapp create \
     DATABASE_URL=secretref:DATABASE-URL@$KV \
     REDIS_URL=secretref:REDIS-URL@$KV \
     BACKEND_CORS_ORIGINS=secretref:BACKEND-CORS-ORIGINS@$KV \
+    AI_COMMS_DASHBOARD_ENABLED=true \
+    INTERCONNECT_ENABLED=true \
   -o none
 
 FQDN=$(az containerapp show -g "$RG" -n "$APP_NAME" --query properties.configuration.ingress.fqdn -o tsv)

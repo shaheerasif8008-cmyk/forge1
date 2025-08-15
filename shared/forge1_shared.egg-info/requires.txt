@@ -1,0 +1,9 @@
+pydantic<3,>=2.8
+PyYAML<7,>=6
+
+[dev]
+pytest>=8
+mypy>=1.10
+ruff>=0.5
+black>=24.4
+types-PyYAML

@@ -200,6 +200,46 @@ class MetricsService:
             db.rollback()
             logger.warning(f"Postgres rollup failed: {e}")
 
+    def snapshot_performance(
+        self,
+        db: Session,
+        *,
+        employee_id: str,
+        employee_version_id: int | None,
+        strategy: str | None,
+        window_start: datetime | None,
+        window_end: datetime | None,
+        tasks: int,
+        successes: int,
+        avg_latency_ms: float | None,
+        p95_latency_ms: float | None,
+        avg_cost_cents: float | None,
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist a performance snapshot for self-tuning comparisons."""
+        try:
+            from ...db.models import PerformanceSnapshot
+
+            PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+            row = PerformanceSnapshot(
+                employee_id=employee_id,
+                employee_version_id=employee_version_id,
+                strategy=strategy,
+                window_start=window_start,
+                window_end=window_end,
+                tasks=int(tasks),
+                successes=int(successes),
+                avg_latency_ms=float(avg_latency_ms) if avg_latency_ms is not None else None,
+                p95_latency_ms=float(p95_latency_ms) if p95_latency_ms is not None else None,
+                avg_cost_cents=float(avg_cost_cents) if avg_cost_cents is not None else None,
+                metrics=metrics or {},
+            )
+            db.add(row)
+            db.commit()
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            logger.warning(f"Persist performance snapshot failed: {e}")
+
     def rollup_tool_call(self, db: Session, tenant_id: str, employee_id: str | None) -> None:
         day = self._today()
         try:

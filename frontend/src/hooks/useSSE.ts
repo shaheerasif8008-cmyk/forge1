@@ -1,35 +1,30 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-interface UseSSEOptions {
+interface UseSSEOptions<T> {
   url: string;
   enabled?: boolean;
-  onMessage?: (data: unknown) => void;
+  onMessage?: (data: T) => void;
   onError?: (error: Event) => void;
 }
 
-interface UseSSEReturn {
-  data: unknown[];
+interface UseSSEReturn<T> {
+  data: T[];
   isConnected: boolean;
   error: string | null;
   reconnect: () => void;
 }
 
-export function useSSE({
-  url,
-  enabled = true,
-  onMessage,
-  onError,
-}: UseSSEOptions): UseSSEReturn {
-  const [data, setData] = useState<unknown[]>([]);
+export function useSSE<T = unknown>({ url, enabled = true, onMessage, onError }: UseSSEOptions<T>): UseSSEReturn<T> {
+  const [data, setData] = useState<T[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttempts = useRef(0);
 
-  const connect = () => {
+  const connect = useCallback(() => {
     if (!enabled || !url) return;
 
     try {
@@ -48,12 +43,11 @@ export function useSSE({
 
       eventSource.onmessage = (event) => {
         try {
-          const parsedData = JSON.parse(event.data);
+          const parsedData = JSON.parse(event.data) as T;
           setData((prev) => [parsedData, ...prev.slice(0, 99)]);
           onMessage?.(parsedData);
         } catch {
-          setData((prev) => [event.data, ...prev.slice(0, 99)]);
-          onMessage?.(event.data);
+          // ignore non-JSON messages for typed hook
         }
       };
 
@@ -75,12 +69,12 @@ export function useSSE({
       setError(err instanceof Error ? err.message : "Failed to connect");
       setIsConnected(false);
     }
-  };
+  }, [enabled, url, onMessage, onError]);
 
-  const reconnect = () => {
+  const reconnect = useCallback(() => {
     reconnectAttempts.current = 0;
     connect();
-  };
+  }, [connect]);
 
   useEffect(() => {
     if (enabled) {
@@ -95,7 +89,7 @@ export function useSSE({
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [url, enabled]);
+  }, [connect, enabled]);
 
   return {
     data,

@@ -311,6 +311,9 @@ VITE_APP_VERSION=1.0.0
 - **Input Validation**: Pydantic models for request validation
 - **Environment Variables**: Secure configuration management
 - **HTTPS**: Production deployments should use HTTPS
+ - **Secret Scanning**: Pre-commit with gitleaks blocks secrets before commit
+ - **Dependency Audits**: CI runs `npm audit` and `pip-audit` on pushes/PRs
+ - **SBOM**: CycloneDX SBOMs generated on `v*` tags and uploaded as artifacts
 
 ## 📊 Monitoring
 
@@ -388,4 +391,31 @@ For support and questions:
 ---
 
 **Forge 1** - Building the future of AI orchestration, one task at a time. 🚀
+
+## Forge1 Frontend
+
+Vite + React + TypeScript + Tailwind CSS client for Forge1 Client Portal (CP) and Testing App (TA).
+
+### Requirements
+- Node 18+
+
+### Setup
+```bash
+npm install
+cp .env .env.local # adjust if needed
+npm run dev
+```
+
+### Build
+```bash
+npm run build
+npm run preview
+```
+
+### Env
+- `VITE_API_BASE_URL` (required)
+
+### Deployment (Azure Static Web Apps)
+- Uses `staticwebapp.config.json` for SPA routing
+- Provide environment variables in SWA config or GitHub Actions
 

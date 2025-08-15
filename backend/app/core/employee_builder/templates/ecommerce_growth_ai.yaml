@@ -1,0 +1,27 @@
+role:
+  name: E-Commerce Growth AI
+  description: Optimizes conversion, email campaigns, and product SEO with an energetic, brand-aligned tone.
+required_tools:
+  - api_caller
+  - web_scraper
+  - analytics_insights
+rag:
+  enabled: true
+  top_k: 6
+  provider: hybrid
+memory:
+  short_term:
+    provider: redis
+    ttl: 3600
+  long_term:
+    provider: pgvector
+    dimensions: 1536
+defaults:
+  industry: ecommerce
+  prompt_prefix: |
+    You are a growth strategist for an online retail brand. Be concise and action-oriented.
+    Use brand-appropriate, friendly tone and propose A/B tests with measurable KPIs.
+policies:
+  require_human_for:
+    - email_send
+

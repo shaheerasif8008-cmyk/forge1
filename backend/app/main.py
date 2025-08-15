@@ -4,12 +4,15 @@ import time
 import logging
 
 from fastapi import FastAPI, Request, Response
+from pydantic import BaseModel
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 
 from .api import api_router
 from .api.employees_invoke import router as employees_invoke_router
 from .core.config import settings
+from .router.runtime import choose_region_for_request, forward_request_to_region
 from .core.logging_config import (
     configure_logging,
     generate_trace_id,
@@ -189,7 +192,34 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
         logger.info(
             "Request start",
         )
-        response = await call_next(request)
+        # Multi-region cost-based routing: forward non-critical paths to cheaper healthy regions
+        forwarded = False
+        try:
+            if settings.multi_region_routing_enabled:
+                region = await choose_region_for_request(str(request.url.path))
+                if region and settings.region and region != settings.region:
+                    body = None
+                    try:
+                        body = await request.json()
+                    except Exception:
+                        body = None
+                    status_code, payload = await forward_request_to_region(
+                        region,
+                        request.method,
+                        str(request.url.path),
+                        headers={"content-type": request.headers.get("content-type", "application/json")},
+                        json_body=body,
+                    )
+                    from fastapi.responses import JSONResponse
+                    if isinstance(payload, (dict, list)):
+                        response = JSONResponse(status_code=status_code, content=payload)
+                    else:
+                        response = Response(status_code=status_code, content=str(payload))
+                    forwarded = True
+        except Exception:
+            forwarded = False
+        if not forwarded:
+            response = await call_next(request)
         status_code = response.status_code
     except Exception as exc:  # noqa: BLE001
         # Log the exception with stack
@@ -257,3 +287,57 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
         clear_request_context()
 
     return response
+
+
+# ---- OpenAPI customization: document auth headers and error shape ----
+
+class ErrorResponse(BaseModel):
+    detail: str
+
+
+def custom_openapi() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version="1.0.0",
+        description="Forge 1 API",
+        routes=app.routes,
+    )
+    components = openapi_schema.setdefault("components", {})
+    # Security schemes
+    sec = components.setdefault("securitySchemes", {})
+    # JWT bearer (already implied by OAuth2PasswordBearer but we add explicit header auth for clarity)
+    sec.setdefault(
+        "BearerAuth",
+        {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "JWT access token in Authorization: Bearer <token>",
+        },
+    )
+    # Employee-Key header for EaaS
+    sec.setdefault(
+        "EmployeeKey",
+        {
+            "type": "apiKey",
+            "in": "header",
+            "name": "Employee-Key",
+            "description": "Employee API key header: EK_<prefix>.<secret>",
+        },
+    )
+    # Error shape schema
+    schemas = components.setdefault("schemas", {})
+    if "ErrorResponse" not in schemas:
+        schemas["ErrorResponse"] = {
+            "title": "ErrorResponse",
+            "type": "object",
+            "properties": {"detail": {"type": "string"}},
+            "required": ["detail"],
+        }
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[assignment]

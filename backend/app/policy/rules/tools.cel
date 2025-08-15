@@ -1,0 +1,10 @@
+# Per-tenant tool allow/deny example rules (one JSON per line)
+# Subject/action are matched exactly; 'match' is substring searched in context JSON
+
+# Deny a tool for a tenant
+{"subject":"tool:web_scraper","action":"execute","match":"\"tenant_id\": \"t-deny\"","allow":false,"reason":"tenant deny web_scraper"}
+
+# Allow specific domain for api_caller
+{"subject":"tool:api_caller","action":"execute","match":"example.com","allow":true,"reason":"allow example.com"}
+
+

@@ -61,6 +61,7 @@ def normalize_events(
                     "model_used": t.model_used,
                     "tokens": t.tokens_used,
                     "latency_ms": t.execution_time,
+                    "cost_cents": getattr(t, "cost_cents", None),
                     "success": t.success,
                     "error": t.error_message,
                     "ts": (t.created_at.isoformat() if t.created_at else None),
@@ -137,6 +138,56 @@ def normalize_events(
                     "ts": (ins.created_at.isoformat() if ins.created_at else None),
                 }
             )
+    except Exception:
+        pass
+
+    # Include performance snapshots
+    try:
+        from ...db.models import PerformanceSnapshot
+        PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+        snaps = (
+            db.query(PerformanceSnapshot)
+            .filter(PerformanceSnapshot.employee_id == employee_id)
+            .order_by(desc(PerformanceSnapshot.id))
+            .limit(max(1, limit // 2))
+            .offset(offset // 2)
+            .all()
+        )
+        for s in snaps:
+            events.append(
+                {
+                    "type": "snapshot",
+                    "strategy": s.strategy,
+                    "tasks": s.tasks,
+                    "successes": s.successes,
+                    "avg_latency_ms": s.avg_latency_ms,
+                    "avg_cost_cents": s.avg_cost_cents,
+                    "ts": (s.created_at.isoformat() if s.created_at else None),
+                }
+            )
+    except Exception:
+        pass
+
+    # Include tracing spans root for graph render
+    try:
+        from ...db.models import TraceSpan
+        TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+        roots = (
+            db.query(TraceSpan)
+            .filter(TraceSpan.employee_id == employee_id, TraceSpan.parent_span_id.is_(None))
+            .order_by(desc(TraceSpan.id))
+            .limit(max(1, limit // 4))
+            .all()
+        )
+        for r in roots:
+            events.append({
+                "type": "trace_root",
+                "trace_id": r.trace_id,
+                "span_id": r.span_id,
+                "name": r.name,
+                "status": r.status,
+                "ts": (r.started_at.isoformat() if r.started_at else None),
+            })
     except Exception:
         pass
 

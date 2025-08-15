@@ -41,3 +41,22 @@ def set_flag_endpoint(payload: FlagSetRequest, db: Session = Depends(get_session
     return {"status": "ok"}
 
 
+# Router override documentation (for discoverability via OpenAPI)
+@router.get("/router/flags", dependencies=[Depends(require_admin)])
+def list_router_flags() -> dict:
+    return {
+        "force": [
+            "router.force_provider_openrouter",
+            "router.force_provider_openai",
+            "router.force_provider_claude",
+            "router.force_provider_gemini",
+        ],
+        "disable": [
+            "router.disable_provider_openrouter",
+            "router.disable_provider_openai",
+            "router.disable_provider_claude",
+            "router.disable_provider_gemini",
+        ],
+    }
+
+

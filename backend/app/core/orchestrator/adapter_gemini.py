@@ -112,7 +112,7 @@ class GeminiAdapter(LLMAdapter):
             trace_id = get_trace_id() or str(context.get("trace_id")) if context else None
             if trace_id:
                 headers["X-Trace-ID"] = trace_id
-            max_retries = int(context.get("retries", 1))
+            max_retries = int(context.get("retries", 2))
             import random as _rand
             delay = 0.25 + _rand.uniform(0, 0.1)
             attempt = 0

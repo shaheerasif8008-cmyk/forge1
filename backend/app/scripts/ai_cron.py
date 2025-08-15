@@ -14,6 +14,7 @@ from ..db.session import SessionLocal
 from ..db.models import AiInsight, AiRiskReport, DailyUsageMetric, RefinementSlo, RefinementAction, Employee
 from ..core.telemetry.metrics_service import MetricsService
 from ..interconnect import get_interconnect
+from ..core.config import settings
 
 
 def _record_insight(actor: str, title: str, body: str, labels: dict[str, Any] | None, metrics: dict[str, Any] | None) -> None:
@@ -89,6 +90,15 @@ def run_testing_ai() -> None:
         db.commit()
     _record_insight("testing_ai", "Risk report updated", "See latest risk heatmap.", {"quality": True}, {})
     MetricsService().incr_actor_run("testing_ai")
+    # Emit region heartbeat (best-effort, synchronous) so health-based routing has signal
+    try:
+        import asyncio as _asyncio
+        async def _beat():
+            ic = await get_interconnect()
+            await ic.set_region_health(settings.region or "local", healthy=True, ttl_secs=settings.region_health_ttl_secs)
+        _asyncio.get_event_loop().run_until_complete(_beat())
+    except Exception:
+        pass
 
 
 def run_refinement_engine() -> None:

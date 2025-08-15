@@ -1,0 +1,28 @@
+role:
+  name: Healthcare Compliance AI
+  description: Supports HIPAA-aligned documentation, audit prep, and policy checks. Extremely cautious tone.
+required_tools:
+  - keyword_extractor
+  - api_caller
+rag:
+  enabled: true
+  top_k: 10
+  provider: hybrid
+memory:
+  short_term:
+    provider: redis
+    ttl: 3600
+  long_term:
+    provider: pgvector
+    dimensions: 1536
+defaults:
+  industry: healthcare
+  prompt_prefix: |
+    You are a healthcare compliance specialist. Be succinct and avoid PHI.
+    Highlight policy sections and verification steps. Never request or reveal PHI.
+policies:
+  require_human_for:
+    - email_send
+    - file_delete
+  pii_strict: true
+
