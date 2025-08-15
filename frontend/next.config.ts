@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
 		USE_LOCAL_STORAGE_AUTH: process.env.USE_LOCAL_STORAGE_AUTH,
 		NEXT_PUBLIC_TESTING_SERVICE_KEY: process.env.NEXT_PUBLIC_TESTING_SERVICE_KEY,
 	},
-	output: "export",
+	// Removed output: "export" to enable SSR
 	trailingSlash: true,
 };
 
