@@ -13,12 +13,8 @@ pnpm-debug.log*
 *.local
 
 
-<<<<<<< Current (Your changes)
 # Docker
 pgdata/
 *.log
 docker-compose.override.yml
-
-
-=======
->>>>>>> Incoming (Background Agent changes)
+ 
