@@ -4,14 +4,13 @@ import { useEffect, useRef, useState } from "react";
 
 interface UseSSEOptions {
   url: string;
-  headers?: Record<string, string>;
   enabled?: boolean;
-  onMessage?: (data: any) => void;
+  onMessage?: (data: unknown) => void;
   onError?: (error: Event) => void;
 }
 
 interface UseSSEReturn {
-  data: any[];
+  data: unknown[];
   isConnected: boolean;
   error: string | null;
   reconnect: () => void;
@@ -19,12 +18,11 @@ interface UseSSEReturn {
 
 export function useSSE({
   url,
-  headers = {},
   enabled = true,
   onMessage,
   onError,
 }: UseSSEOptions): UseSSEReturn {
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<unknown[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -35,12 +33,10 @@ export function useSSE({
     if (!enabled || !url) return;
 
     try {
-      // Close existing connection
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
 
-      // Create new EventSource
       const eventSource = new EventSource(url);
       eventSourceRef.current = eventSource;
 
@@ -53,10 +49,9 @@ export function useSSE({
       eventSource.onmessage = (event) => {
         try {
           const parsedData = JSON.parse(event.data);
-          setData((prev) => [parsedData, ...prev.slice(0, 99)]); // Keep last 100 messages
+          setData((prev) => [parsedData, ...prev.slice(0, 99)]);
           onMessage?.(parsedData);
         } catch {
-          // Handle non-JSON messages
           setData((prev) => [event.data, ...prev.slice(0, 99)]);
           onMessage?.(event.data);
         }
@@ -67,7 +62,6 @@ export function useSSE({
         setError("Connection lost");
         onError?.(event);
 
-        // Implement exponential backoff for reconnection
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current += 1;
 
