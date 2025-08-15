@@ -1,56 +1,49 @@
-name: Deploy Client Portal to Azure Static Web Apps (Staging)
+name: Deploy Client Portal to Azure Web App (SSR)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ staging, main ]
     paths:
       - "frontend/**"
-      - ".github/workflows/swa-deploy.yml"
+      - ".github/workflows/azure-webapp-frontend.yml"
 
 jobs:
-  build_and_deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_BASE_URL: https://forge1-backend-v2.agreeablebush-fb7c993c.eastus.azurecontainerapps.io
+      NEXT_PUBLIC_ENV_LABEL: Staging
+      NEXT_PUBLIC_GIT_SHA: ${{ github.sha }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Use Node 18
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
+          node-version: "18"
 
       - name: Install deps
         working-directory: frontend
         run: npm ci
 
-      - name: Build (Next static export)
+      - name: Build (inject env at build time)
         working-directory: frontend
-        env:
-          NEXT_PUBLIC_API_BASE_URL: ${{ secrets.STAGING_API_URL }}
-          NEXT_PUBLIC_TESTING_API_BASE_URL: ${{ secrets.TESTING_APP_BASE_URL }}
-          NEXT_PUBLIC_TESTING_SERVICE_KEY: ${{ secrets.TESTING_SERVICE_KEY }}
-          NEXT_PUBLIC_EVENTS_TOKEN: ${{ secrets.TESTING_ADMIN_JWT }}
-          NEXT_PUBLIC_ENV_LABEL: Staging
-          NEXT_PUBLIC_GIT_SHA: ${{ github.sha }}
-        run: npm run build
-
-      - name: Deploy to Azure Static Web Apps
-        id: deploy_swa
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_SWA_TOKEN }}
-          action: upload
-          # Upload the pre-built static export
-          app_location: frontend/out
-          skip_app_build: true
-
-      - name: Output SWA URL
         run: |
-          echo "Frontend deployed to Azure Static Web Apps." >> $GITHUB_STEP_SUMMARY
-          echo "SWA URL: ${{ steps.deploy_swa.outputs.static_web_app_url }}" >> $GITHUB_STEP_SUMMARY
-          echo "API base: ${{ secrets.STAGING_API_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL" >> .env.production
+          echo "NEXT_PUBLIC_ENV_LABEL=$NEXT_PUBLIC_ENV_LABEL" >> .env.production
+          echo "NEXT_PUBLIC_GIT_SHA=$NEXT_PUBLIC_GIT_SHA" >> .env.production
+          npm run build
 
+      - name: Archive build
+        run: |
+          cd frontend
+          # include package.json and .next so App Service can run SSR via next start
+          zip -r ../frontend.zip . -x "node_modules/*"
 
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: forge1clientui
+          package: frontend.zip
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
