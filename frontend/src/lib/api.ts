@@ -51,19 +51,22 @@ class ApiClient {
     const url = `${this.baseUrl}${endpoint}`;
     const token = this.getToken();
 
-    const headers: HeadersInit = {
+    const baseHeaders: Record<string, string> = {
       "Content-Type": "application/json",
-      ...options.headers,
     };
+    if (options.headers) {
+      const extra = options.headers as Record<string, string>;
+      for (const k of Object.keys(extra || {})) baseHeaders[k] = String(extra[k]);
+    }
 
     if (token) {
-      headers.Authorization = `Bearer ${token}`;
+      baseHeaders["Authorization"] = `Bearer ${token}`;
     }
 
     try {
       const response = await fetch(url, {
         ...options,
-        headers,
+        headers: baseHeaders,
       });
 
       if (response.status === 401) {
@@ -72,11 +75,12 @@ class ApiClient {
       }
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({} as unknown));
+        const detail = (errorData as { detail?: string }).detail;
+        throw new Error(detail || `HTTP ${response.status}`);
       }
 
-      return await response.json();
+      return (await response.json()) as T;
     } catch (error) {
       if (error instanceof Error) {
         throw error;

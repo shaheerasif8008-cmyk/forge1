@@ -85,7 +85,7 @@ export default function LoginPage() {
             </Button>
           </form>
           <div className="mt-4 text-center text-sm text-muted-foreground">
-            <p>Use any email with password: admin</p>
+            <p>Use any email with password: admin. For testing, service endpoints use a service key.</p>
           </div>
         </CardContent>
       </Card>
