@@ -25,9 +25,9 @@ jobs:
       - name: Build frontend (staging)
         working-directory: frontend
         env:
-          VITE_API_URL: ${{ secrets.STAGING_API_URL }}
-          VITE_API_BASE_URL: ${{ secrets.STAGING_API_URL }}
-          VITE_ENVIRONMENT: staging
+          NEXT_PUBLIC_API_BASE_URL: ${{ secrets.STAGING_API_URL }}
+          NEXT_PUBLIC_ENV_LABEL: Staging
+          NEXT_PUBLIC_GIT_SHA: ${{ github.sha }}
         run: npm run build
 
       - name: Deploy to Azure Static Web Apps
@@ -37,7 +37,8 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_SWA_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: upload
-          app_location: frontend/dist
+          app_location: frontend
+          output_location: .next
           skip_app_build: true
 
       - name: Output SWA URL
