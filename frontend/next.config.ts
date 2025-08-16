@@ -7,7 +7,8 @@ const nextConfig: NextConfig = {
 		USE_LOCAL_STORAGE_AUTH: process.env.USE_LOCAL_STORAGE_AUTH,
 		NEXT_PUBLIC_TESTING_SERVICE_KEY: process.env.NEXT_PUBLIC_TESTING_SERVICE_KEY,
 	},
-	output: "export",
+	// Use standalone output for containerization
+	output: process.env.NEXT_BUILD_MODE === "export" ? "export" : "standalone",
 	trailingSlash: true,
 };
 
