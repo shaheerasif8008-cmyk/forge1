@@ -7,8 +7,13 @@ const nextConfig: NextConfig = {
 		USE_LOCAL_STORAGE_AUTH: process.env.USE_LOCAL_STORAGE_AUTH,
 		NEXT_PUBLIC_TESTING_SERVICE_KEY: process.env.NEXT_PUBLIC_TESTING_SERVICE_KEY,
 	},
-	output: "export",
+	// Use standalone output for optimized Docker deployments
+	output: "standalone",
 	trailingSlash: true,
+	// Disable image optimization for containerized deployments
+	images: {
+		unoptimized: true,
+	},
 };
 
 export default nextConfig;
