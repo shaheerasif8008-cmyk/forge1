@@ -131,7 +131,7 @@ deploy_container_app() {
     if az containerapp show -g "$RG" -n "$UI_APP" >/dev/null 2>&1; then
         info "Container App exists, updating..."
         
-        # Update the container app
+        # Update the container app with health probe
         az containerapp update \
             -g "$RG" \
             -n "$UI_APP" \
@@ -141,11 +141,12 @@ deploy_container_app() {
                 "NEXT_PUBLIC_ENV_LABEL=Staging" \
                 "NEXT_PUBLIC_API_BASE_URL=${BACKEND_URL}" \
                 "NEXT_PUBLIC_GIT_SHA=${GIT_SHA}" \
+                "PORT=3000" \
             --output none || die "Failed to update Container App"
     else
         info "Creating new Container App..."
         
-        # Create the container app
+        # Create the container app with health probe
         az containerapp create \
             -g "$RG" \
             -n "$UI_APP" \
@@ -163,6 +164,8 @@ deploy_container_app() {
                 "NEXT_PUBLIC_ENV_LABEL=Staging" \
                 "NEXT_PUBLIC_API_BASE_URL=${BACKEND_URL}" \
                 "NEXT_PUBLIC_GIT_SHA=${GIT_SHA}" \
+                "PORT=3000" \
+            --query-string "/" \
             --output none || die "Failed to create Container App"
     fi
     
