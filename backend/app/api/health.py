@@ -42,9 +42,9 @@ async def ready(
     # Degraded-ready: if DB is down but Redis is up, return 200 with degraded flag in dev only.
     if db_ok and redis_ok:
         return {"status": "ready", "trace_id": get_trace_id()}
-    # In dev, allow degraded state to be considered ready for basic UI/dev flows
+    # In dev/local, allow degraded state to be considered ready for basic UI/dev flows
     from ..core.config import settings as cfg
-    if cfg.env == "dev" and redis_ok:
+    if cfg.env in {"dev", "local"} and redis_ok:
         return {"status": "ready_degraded", "postgres": db_ok, "redis": redis_ok, "trace_id": get_trace_id()}
     response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "unready", "postgres": db_ok, "redis": redis_ok, "trace_id": get_trace_id()}

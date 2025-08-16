@@ -23,7 +23,7 @@ def create_access_token(subject: str, extra_claims: dict[str, object] | None = N
         payload.update(extra_claims)
     # Use fallback secret in dev if JWT_SECRET not set
     jwt_secret = settings.jwt_secret
-    if jwt_secret is None and settings.env == "dev":
+    if jwt_secret is None and settings.env in {"dev", "local"}:
         jwt_secret = "dev-only-secret-do-not-use-in-production"
     token = jwt.encode(payload, jwt_secret, algorithm=ALGORITHM)
     return token
@@ -33,7 +33,7 @@ def decode_access_token(token: str) -> dict[str, object]:
     try:
         # Use fallback secret in dev if JWT_SECRET not set
         jwt_secret = settings.jwt_secret
-        if jwt_secret is None and settings.env == "dev":
+        if jwt_secret is None and settings.env in {"dev", "local"}:
             jwt_secret = "dev-only-secret-do-not-use-in-production"
         # allow small leeway for clock skew
         payload: dict[str, object] = jwt.decode(
@@ -77,7 +77,7 @@ async def login(
     # Block demo password in non-dev environments (determine env dynamically to honor test monkeypatch)
     import os as _os
     current_env = _os.getenv("ENV", settings.env)
-    if current_env != "dev":
+    if current_env not in {"dev", "local"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Login disabled in this environment")
     if form_data.password != "admin":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -105,7 +105,7 @@ async def login(
             roles = ["user"]
     else:
         # Strictly dev-only fallback
-        if current_env == "dev":
+        if current_env in {"dev", "local"}:
             user_id = "1"
             tenant_id = "default"
             # Grant admin in dev fallback to enable admin routes during local/testing flows

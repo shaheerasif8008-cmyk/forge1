@@ -41,6 +41,7 @@ from .aggregator import router as aggregator_router
 from .privacy import router as privacy_router
 from .admin_runs import router as admin_runs_router
 from .telemetry import router as telemetry_router
+from .metrics_summary import router as metrics_dashboard_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -84,5 +85,6 @@ api_router.include_router(aggregator_router)
 api_router.include_router(privacy_router)
 api_router.include_router(admin_runs_router)
 api_router.include_router(telemetry_router)
+api_router.include_router(metrics_dashboard_router)
 
 logging.getLogger(__name__).info("API routers registered")

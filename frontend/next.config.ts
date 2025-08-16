@@ -7,8 +7,11 @@ const nextConfig: NextConfig = {
 		USE_LOCAL_STORAGE_AUTH: process.env.USE_LOCAL_STORAGE_AUTH,
 		NEXT_PUBLIC_TESTING_SERVICE_KEY: process.env.NEXT_PUBLIC_TESTING_SERVICE_KEY,
 	},
-	output: "export",
-	trailingSlash: true,
+	// SSR-compatible defaults for local dev; keep standalone when exporting
+	output: process.env.NEXT_BUILD_MODE === "export" ? "export" : undefined,
+	trailingSlash: false,
+	poweredByHeader: false,
+	reactStrictMode: true,
 };
 
 export default nextConfig;

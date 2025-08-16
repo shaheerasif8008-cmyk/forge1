@@ -157,8 +157,10 @@ class ApiClient {
   private onUnauthorized: () => void = () => {};
 
   constructor() {
+    const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "").trim();
+    const defaultBase = baseUrl || "/api/proxy";
     this.axios = axios.create({
-      baseURL: config.apiBaseUrl,
+      baseURL: defaultBase,
       headers: { "Content-Type": "application/json" },
       withCredentials: false,
     });
@@ -184,7 +186,7 @@ class ApiClient {
           if (refresh) {
             original._retry = true;
             try {
-              const r = await axios.post<LoginResponseV2>(`${config.apiBaseUrl}/api/v1/auth/refresh`, {
+              const r = await axios.post<LoginResponseV2>(`${defaultBase}/api/v1/auth/refresh`, {
                 refresh_token: refresh,
               });
               this.setTokens(r.data.access_token, r.data.refresh_token);
@@ -316,7 +318,8 @@ class ApiClient {
     if (filters?.employee_id) qp.set("employee_id", filters.employee_id);
     if (token) qp.set("token", token);
     const qs = qp.toString();
-    return `${config.apiBaseUrl}/api/v1/ai-comms/events${qs ? `?${qs}` : ""}`;
+    const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy").replace(/\/$/, "");
+    return `${base}/api/v1/ai-comms/events${qs ? `?${qs}` : ""}`;
   }
 }
 

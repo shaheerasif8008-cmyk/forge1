@@ -80,15 +80,15 @@ app = FastAPI(title="Forge 1 Backend", lifespan=lifespan)
 
 # Add CORS middleware
 origins_cfg = settings.backend_cors_origins
-if settings.env != "dev":
+if settings.env not in {"dev", "local"}:
     if not origins_cfg or origins_cfg.strip() == "*":
         raise RuntimeError("BACKEND_CORS_ORIGINS must be set to specific origins in non-dev environments")
     allow_origins = [o.strip() for o in origins_cfg.split(",") if o.strip()]
 else:
     allow_origins = ["*"]
 
-# Fail-fast on missing JWT and loose CORS in non-dev
-if settings.env != "dev":
+# Fail-fast on missing JWT and loose CORS in non-dev/local
+if settings.env not in {"dev", "local"}:
     if not settings.jwt_secret:
         raise RuntimeError("JWT_SECRET must be set in non-dev environments")
     if settings.backend_cors_origins.strip() == "*":
