@@ -7,8 +7,10 @@ const nextConfig: NextConfig = {
 		USE_LOCAL_STORAGE_AUTH: process.env.USE_LOCAL_STORAGE_AUTH,
 		NEXT_PUBLIC_TESTING_SERVICE_KEY: process.env.NEXT_PUBLIC_TESTING_SERVICE_KEY,
 	},
-	output: "export",
-	trailingSlash: true,
+	// Change from "export" to "standalone" for containerized deployment
+	output: "standalone",
+	// Remove trailingSlash for SSR
+	// trailingSlash: true,
 };
 
 export default nextConfig;
