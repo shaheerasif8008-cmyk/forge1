@@ -41,7 +41,7 @@ jobs:
           cp web.config out/web.config
 
       - name: Deploy to Azure Web App (Zip Deploy)
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
           app-name: "forge1clientui"
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
