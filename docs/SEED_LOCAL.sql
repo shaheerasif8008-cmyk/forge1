@@ -1,3 +1,18 @@
+-- Seed minimal data for local development
+INSERT INTO tenants (id, name, beta, created_at)
+VALUES ('t-local', 'Local Tenant', false, NOW())
+ON CONFLICT (id) DO NOTHING;
+
+-- Optional: create an admin user placeholder if schema supports it
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='users') THEN
+    INSERT INTO users (email, username, hashed_password, is_active, is_superuser, role, created_at)
+    VALUES ('admin@example.com', 'admin', 'change-me', true, true, 'admin', NOW())
+    ON CONFLICT DO NOTHING;
+  END IF;
+END$$;
+
 -- Seed demo data for Local Mode
 -- Safe to run multiple times (uses upserts where applicable)
 

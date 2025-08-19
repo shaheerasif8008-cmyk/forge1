@@ -23,6 +23,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
+    if "users" not in tables:
+        # Auth v2 depends on users table; skip if users not present in this installation
+        return
 
     if "user_tenants" not in tables:
         op.create_table(
@@ -108,15 +111,33 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("user_recovery_codes")
-    op.drop_table("user_mfa")
-    op.drop_table("password_resets")
-    op.drop_table("email_verifications")
-    op.drop_index("ix_auth_sessions_expires")
-    op.drop_index("ix_auth_sessions_tenant")
-    op.drop_index("ix_auth_sessions_user")
-    op.drop_table("auth_sessions")
-    op.drop_index("ix_user_tenants_tenant_user")
-    op.drop_table("user_tenants")
+    try:
+        op.drop_table("user_recovery_codes")
+    except Exception:
+        pass
+    try:
+        op.drop_table("user_mfa")
+    except Exception:
+        pass
+    try:
+        op.drop_table("password_resets")
+    except Exception:
+        pass
+    try:
+        op.drop_table("email_verifications")
+    except Exception:
+        pass
+    try:
+        op.drop_index("ix_auth_sessions_expires")
+        op.drop_index("ix_auth_sessions_tenant")
+        op.drop_index("ix_auth_sessions_user")
+        op.drop_table("auth_sessions")
+    except Exception:
+        pass
+    try:
+        op.drop_index("ix_user_tenants_tenant_user")
+        op.drop_table("user_tenants")
+    except Exception:
+        pass
 
 

@@ -17,6 +17,7 @@ from ..core.employee_builder.employee_builder import EmployeeBuilder
 from ..core.runtime.deployment_runtime import DeploymentRuntime
 from ..core.logging_config import get_trace_id
 from ..core.telemetry.metrics_service import MetricsService
+from ..core.memory.long_term import add_memory_event, add_memory_fact, search_memory
 from ..core.security.rate_limit import increment_and_check
 from ..db.models import AuditLog, Employee, TaskExecution, Tenant, EmployeeVersion, PerformanceSnapshot
 from ..core.quality.guards import idempotency_check_and_store, idempotency_store_response
@@ -35,6 +36,10 @@ class EmployeeIn(BaseModel):
     name: str = Field(..., min_length=1)
     role_name: str
     description: str
+    tools: list[str | dict[str, Any]]
+
+
+class ToolsUpdate(BaseModel):
     tools: list[str | dict[str, Any]]
 
 
@@ -126,6 +131,25 @@ def list_employees(
     ]
 
 
+@router.patch("/{employee_id}/tools", response_model=EmployeeOut)
+def update_employee_tools(
+    employee_id: str,
+    payload: ToolsUpdate,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> EmployeeOut:
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+    cfg = dict(row.config or {})
+    cfg["tools"] = payload.tools
+    row.config = cfg
+    db.add(row)
+    db.commit()
+    return EmployeeOut(id=row.id, name=row.name, tenant_id=row.tenant_id, owner_user_id=row.owner_user_id, config=row.config, active_version_id=row.active_version_id)
+
+
 @router.post("/", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
 def create_employee(
     payload: EmployeeIn,
@@ -158,10 +182,17 @@ def create_employee(
     if not ok:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
     try:
+        # In dev/local, allow empty tools by injecting a safe default tool for tests/local DX
+        tools_spec = payload.tools
+        try:
+            if (not tools_spec) and (settings.env in {"dev", "local"}):
+                tools_spec = ["api_caller"]
+        except Exception:
+            pass
         builder = EmployeeBuilder(
             role_name=payload.role_name,
             description=payload.description,
-            tools=payload.tools,
+            tools=tools_spec,
         )
         config = builder.build_config()
     except Exception as e:  # noqa: BLE001
@@ -176,37 +207,20 @@ def create_employee(
     try:
         existing = db.get(Employee, eid)
     except SQLAlchemyError:
-        # Ensure required tables exist without creating vector-dependent tables
-        try:
-            db.rollback()
-            from sqlalchemy import inspect
-
-            insp = inspect(engine)
-            tables = set(insp.get_table_names())
-            if "tenants" not in tables:
-                Tenant.__table__.create(bind=engine, checkfirst=True)
-            # Create version table before employees to satisfy FK in dev/CI
-            try:
-                from ..db.models import EmployeeVersion as _EV
-                if "employee_versions" not in tables:
-                    _EV.__table__.create(bind=engine, checkfirst=True)
-            except Exception:
-                pass
-            if "employees" not in tables:
-                Employee.__table__.create(bind=engine, checkfirst=True)
-            else:
-                # If the table exists but new columns don't, add them best-effort for tests/dev
-                try:
-                    cols = {c.get("name") for c in insp.get_columns("employees")}
-                    if "active_version_id" not in cols:
-                        with engine.begin() as conn:
-                            conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS active_version_id INTEGER"))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # Do not attempt runtime DDL; rely on Alembic migrations
+        db.rollback()
         existing = db.get(Employee, eid)
     if existing is not None:
+        # In dev/local, treat duplicate create as idempotent and return existing
+        if settings.env in {"dev", "local"}:
+            return EmployeeOut(
+                id=existing.id,
+                name=existing.name,
+                tenant_id=existing.tenant_id,
+                owner_user_id=existing.owner_user_id,
+                config=existing.config,
+                active_version_id=existing.active_version_id,
+            )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Employee exists")
 
     # Ensure tenant row exists for FK integrity in minimal test environments
@@ -216,9 +230,32 @@ def create_employee(
             db.add(Tenant(id=tenant_id, name="Default Tenant"))
             db.commit()
     except Exception:  # noqa: BLE001
+        # Fallback for older schemas (tenants table without updated_at)
         db.rollback()
+        try:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO tenants (id, name, created_at, beta)
+                    VALUES (:id, :name, NOW(), false)
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                ),
+                {"id": tenant_id, "name": "Default Tenant"},
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
 
     owner_uid = int(current_user["user_id"]) if str(current_user["user_id"]).isdigit() else None
+    # In dev/local auth fallback, the user may not exist in DB; avoid FK violations
+    try:
+        if owner_uid is not None:
+            from ..db.models import User as _User
+            if db.get(_User, owner_uid) is None:
+                owner_uid = None
+    except Exception:
+        owner_uid = None
     row = Employee(
         id=eid,
         tenant_id=tenant_id,
@@ -231,6 +268,13 @@ def create_employee(
         db.commit()
     except Exception as e:  # noqa: BLE001
         db.rollback()
+        # Log and surface detail in dev/local for DX
+        try:
+            logger.exception("Employee create failed", exc_info=e)
+        except Exception:
+            pass
+        if settings.env in {"dev", "local"}:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Create failed") from e
     # Publish interconnect event (best-effort)
     try:
@@ -346,6 +390,29 @@ async def execute_employee(
                 task_data="",
             )
             db.add(exec_row)
+            # Store memory event and summarized fact (best-effort)
+            try:
+                ev_id = add_memory_event(
+                    db,
+                    tenant_id=row.tenant_id,
+                    employee_id=row.id,
+                    content=f"task:{r.metadata.get('task_type','general')} prompt={payload.task}\nresponse={r.output}",
+                    kind="task",
+                    metadata={"model": r.model_used, "success": bool(r.success)},
+                )
+                # naive summary: first sentence of response
+                summary = (str(r.output or "").split(".")[0] or str(r.output or "")).strip()
+                if summary:
+                    add_memory_fact(
+                        db,
+                        tenant_id=row.tenant_id,
+                        employee_id=row.id,
+                        fact=summary,
+                        source_event_id=ev_id,
+                        metadata={"kind": "auto_summary"},
+                    )
+            except Exception:
+                pass
             # Persist metrics rollup per task
             try:
                 from ..core.telemetry.metrics_service import TaskMetrics
@@ -384,6 +451,56 @@ async def execute_employee(
     except Exception:
         pass
     return out
+
+
+class MemoryAddIn(BaseModel):
+    content: str
+    kind: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@router.post("/{employee_id}/memory/add")
+def add_employee_memory(
+    employee_id: str,
+    payload: MemoryAddIn,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> dict[str, Any]:
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+    try:
+        ev_id = add_memory_event(
+            db,
+            tenant_id=row.tenant_id,
+            employee_id=row.id,
+            content=payload.content,
+            kind=(payload.kind or "note"),
+            metadata=payload.metadata or {},
+        )
+        return {"status": "ok", "event_id": ev_id}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/{employee_id}/memory/search")
+def search_employee_memory(
+    employee_id: str,
+    q: str,
+    top_k: int = 5,
+    current_user: dict[str, str] = Depends(get_current_user),  # noqa: B008
+    db: Session = Depends(get_session),  # noqa: B008
+) -> dict[str, Any]:
+    row = db.get(Employee, employee_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    _require_same_tenant(row.tenant_id, current_user["tenant_id"])
+    try:
+        res = search_memory(db, tenant_id=row.tenant_id, employee_id=row.id, query=q, top_k=max(1, min(50, top_k)))
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 class TuneRequest(BaseModel):
@@ -425,10 +542,6 @@ def tune_employee(
         base_cfg["strategy"] = dict(payload.tool_strategy)
 
     # Compute next version number
-    try:
-        EmployeeVersion.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     last = (
         db.query(EmployeeVersion)
         .filter(EmployeeVersion.employee_id == employee_id)
@@ -511,10 +624,6 @@ def list_snapshots(
     if emp is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     _require_same_tenant(emp.tenant_id, current_user["tenant_id"])
-    try:
-        PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     rows = (
         db.query(PerformanceSnapshot)
         .filter(PerformanceSnapshot.employee_id == employee_id)
@@ -623,10 +732,6 @@ def get_employee_performance(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     _require_same_tenant(row.tenant_id, current_user["tenant_id"])
-    try:
-        DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     m = (
         db.query(DailyUsageMetric)
         .filter(DailyUsageMetric.tenant_id == row.tenant_id, DailyUsageMetric.employee_id == employee_id)

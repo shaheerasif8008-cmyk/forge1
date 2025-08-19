@@ -64,12 +64,6 @@ class APICaller(BaseTool):
         try:
             validate_egress_url(url)
             parsed = urlparse(url)
-<<<<<<< Current (Your changes)
-            if parsed.scheme == "http" and not allow_http:
-                raise ValueError("HTTP is disabled. Set allow_http=true to permit.")
-        except Exception as e:
-            raise
-=======
             host = parsed.hostname or ""
             # Add DNS timeout to prevent hanging
             socket.setdefaulttimeout(5.0)
@@ -82,21 +76,21 @@ class APICaller(BaseTool):
                 if ip.is_private or ip.is_loopback or ip.is_link_local:
                     raise ValueError("Blocked private address")
                 # Block IPv6 ULA (fc00::/7) - Unique Local Addresses
-                if ip.version == 6:
-                    # Check if it's in fc00::/7 range
-                    if isinstance(ip, ipaddress.IPv6Address):
-                        # fc00::/7 includes fc00:: to fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-                        if ip.packed[0] & 0xfe == 0xfc:
-                            raise ValueError("Blocked IPv6 ULA address")
-        except ValueError as e:
+                if ip.version == 6 and isinstance(ip, ipaddress.IPv6Address):
+                    if ip.packed[0] & 0xfe == 0xfc:
+                        raise ValueError("Blocked IPv6 ULA address")
+            if parsed.scheme == "http" and not allow_http:
+                raise ValueError("HTTP is disabled. Set allow_http=true to permit.")
+        except ValueError as ve:
             # Re-raise our own ValueError messages
-            raise e
+            logger.warning("APICaller SSRF guard blocked URL", extra={"url": url, "reason": str(ve)})
+            raise
         except Exception as e:  # noqa: BLE001
             # Normalize error to avoid leaking host resolution details
-            raise ValueError("Unable to resolve host for SSRF checks") from e
+            logger.error("APICaller SSRF check error", exc_info=e)
+            raise ValueError("Unable to resolve host for SSRF checks")
         finally:
             socket.setdefaulttimeout(None)  # Ensure timeout is reset
->>>>>>> Incoming (Background Agent changes)
         base_headers = {"User-Agent": "Forge1-APICaller/1.0"}
         merged_headers = {**base_headers, **(headers or {})}
 
@@ -194,6 +188,11 @@ class APICaller(BaseTool):
                         if tenant_id:
                             ms = MetricsService()
                             ms.incr_tool_call(tenant_id=tenant_id, employee_id=employee_id)
+                            try:
+                                from ...telemetry.prom_metrics import incr_tool_call as pm_incr
+                                pm_incr(tenant_id, employee_id)
+                            except Exception:
+                                pass
                             # Persist daily rollup to DB
                             try:
                                 with SessionLocal() as db:

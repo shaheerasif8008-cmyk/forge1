@@ -27,7 +27,8 @@ def list_errors(
     db: Session = Depends(get_session),  # noqa: B008
 ) -> list[dict[str, Any]]:
     try:
-        ErrorSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     rows = (

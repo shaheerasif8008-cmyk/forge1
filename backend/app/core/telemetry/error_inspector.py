@@ -45,7 +45,6 @@ def capture_error_snapshot(
     """
 
     try:
-        ErrorSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
         row = ErrorSnapshot(
             tenant_id=tenant_id,
             employee_id=employee_id,

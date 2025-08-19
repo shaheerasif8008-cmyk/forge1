@@ -8,7 +8,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.db.models import Base
-from app.db.session import engine
 
 
 class BetaMetric(Base):
@@ -23,11 +22,6 @@ class BetaMetric(Base):
     latency_ms = Column(Integer, nullable=True)
     ts = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
     extra = Column(JSONB, nullable=True)
-
-
-def ensure_table_exists() -> None:
-    # Create table if missing (useful in local tests/dev)
-    BetaMetric.__table__.create(bind=engine, checkfirst=True)
 
 
 def aggregate_metrics(db: Session, tenant_id: str | None = None, feature: str | None = None) -> dict[str, Any]:
@@ -70,4 +64,13 @@ def aggregate_metrics(db: Session, tenant_id: str | None = None, feature: str | 
         ],
     }
 
+
+def ensure_table_exists() -> None:
+    """No-op placeholder to preserve imports without runtime DDL.
+
+    Alembic manages the lifecycle of the `beta_metrics` table via migrations
+    (see revision `5_add_beta_metrics`). This function exists to maintain
+    compatibility with callers that previously invoked a runtime DDL helper.
+    """
+    return None
 

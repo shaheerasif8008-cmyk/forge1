@@ -9,7 +9,7 @@ from ..db.models import LedgerAccount, LedgerJournal, LedgerEntry
 
 
 def ensure_accounts(db: Session, *, tenant_id: str | None, names_and_types: list[tuple[str, str]]) -> dict[str, int]:
-    LedgerAccount.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Tables managed by Alembic
     out: dict[str, int] = {}
     for name, typ in names_and_types:
         stmt = pg_insert(LedgerAccount).values(tenant_id=tenant_id, name=name, type=typ)
@@ -32,9 +32,7 @@ def post(db: Session, *, tenant_id: str | None, journal_name: str, external_id: 
     lines: list of {account_name, side, commodity, amount, meta}
     Requires sum(debits) == sum(credits) per commodity.
     """
-    LedgerAccount.__table__.create(bind=db.get_bind(), checkfirst=True)
-    LedgerJournal.__table__.create(bind=db.get_bind(), checkfirst=True)
-    LedgerEntry.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Tables managed by Alembic
     # Idempotency: reuse existing journal if external_id matches
     jr = None
     if external_id:

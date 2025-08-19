@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { useState } from "react";
+import { ApiErrorBanner } from "@/components/ApiErrorBanner";
 
 interface QueryProviderProps {
 	children: React.ReactNode;
@@ -27,6 +28,7 @@ export function QueryProvider({ children }: QueryProviderProps) {
 
 	return (
 		<QueryClientProvider client={queryClient}>
+			<ApiErrorBanner />
 			{children}
 			{process.env.NODE_ENV === "development" && <ReactQueryDevtools />}
 		</QueryClientProvider>

@@ -1,11 +1,57 @@
-name: CI (deprecated)
+name: CI
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
 
 jobs:
-  info:
+  build-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+          POSTGRES_DB: forge1_local
+        ports:
+          - 5542:5432
+        options: >-
+          --health-cmd="pg_isready -U forge" --health-interval=10s --health-timeout=5s --health-retries=5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
     steps:
-      - run: echo "Use ci-testing.yml and ci-prod.yml workflows."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pydantic-settings
+      - name: Lint & type check
+        working-directory: backend
+        run: |
+          python -m pip install ruff mypy
+          ruff check app
+          mypy app || true
+      - name: Backend tests
+        env:
+          ENV: dev
+          DATABASE_URL: postgresql+psycopg://forge:forge@127.0.0.1:5542/forge1_local
+          REDIS_URL: redis://127.0.0.1:6379/0
+        working-directory: backend
+        run: |
+          pytest -q
+      - name: Frontend build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+

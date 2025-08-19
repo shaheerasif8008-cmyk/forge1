@@ -98,7 +98,8 @@ def _create_employee_key_impl(
         raise HTTPException(status_code=404, detail="Not found")
     # Ensure table exists for dev/test environments without full migrations
     try:
-        EmployeeKey.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     prefix, secret_once, hashed = generate_key_pair(pepper=settings.employee_key_pepper)

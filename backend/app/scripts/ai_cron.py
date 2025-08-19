@@ -3,7 +3,7 @@ from __future__ import annotations
 """Cron entrypoints for internal AIs (CEO AI, Central AI, Testing AI).
 
 Run via: `python -m app.scripts.ai_cron <actor>` where actor in {ceo_ai, central_ai, testing_ai}
-This script is safe to run in dev/CI; it creates missing tables as needed.
+This script is safe to run in dev/CI.
 """
 
 import sys
@@ -19,10 +19,6 @@ from ..core.config import settings
 
 def _record_insight(actor: str, title: str, body: str, labels: dict[str, Any] | None, metrics: dict[str, Any] | None) -> None:
     with SessionLocal() as db:
-        try:
-            AiInsight.__table__.create(bind=db.get_bind(), checkfirst=True)
-        except Exception:
-            pass
         row = AiInsight(actor=actor, title=title, body=body, labels=labels or {}, metrics=metrics or {})
         db.add(row)
         db.commit()
@@ -82,10 +78,6 @@ def run_central_ai() -> None:
 
 def run_testing_ai() -> None:
     with SessionLocal() as db:
-        try:
-            AiRiskReport.__table__.create(bind=db.get_bind(), checkfirst=True)
-        except Exception:
-            pass
         db.add(AiRiskReport(report={"heatmap": {"prompt_injection": "medium", "cost_overrun": "low"}, "ts": datetime.now(UTC).isoformat()}))
         db.commit()
     _record_insight("testing_ai", "Risk report updated", "See latest risk heatmap.", {"quality": True}, {})
@@ -103,12 +95,6 @@ def run_testing_ai() -> None:
 
 def run_refinement_engine() -> None:
     with SessionLocal() as db:
-        try:
-            RefinementSlo.__table__.create(bind=db.get_bind(), checkfirst=True)
-            RefinementAction.__table__.create(bind=db.get_bind(), checkfirst=True)
-            DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-        except Exception:
-            pass
         # Defaults in absence of per-role SLOs
         slo_by_role: dict[str, dict[str, float | int]] = {}
         for s in db.query(RefinementSlo).all():

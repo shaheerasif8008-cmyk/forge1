@@ -29,7 +29,7 @@ class IngestItem:
 
 
 def register_source(db: Session, *, tenant_id: str, key: str, type: str, uri: str | None, meta: dict | None) -> RagSource:
-    RagSource.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Tables managed by Alembic
     src = db.query(RagSource).filter(RagSource.tenant_id == tenant_id, RagSource.key == key).one_or_none()
     if src is None:
         src = RagSource(id=f"src_{tenant_id}_{key}", tenant_id=tenant_id, key=key, type=type, uri=uri, meta=meta or {}, version=1)
@@ -82,9 +82,8 @@ def _chunk_text(text: str, *, max_len: int = 1400, overlap: int = 100) -> list[s
 
 def _ensure_tables(db: Session) -> None:
     try:
-        RagSource.__table__.create(bind=db.get_bind(), checkfirst=True)
-        RagChunk.__table__.create(bind=db.get_bind(), checkfirst=True)
-        RagJob.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Tables managed by Alembic
+        pass
     except Exception:
         pass
 
@@ -118,7 +117,8 @@ def _ingest_text(db: Session, *, source: RagSource, text: str, meta: dict[str, A
     db.commit()
     # Create a job record
     try:
-        RagJob.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Tables managed by Alembic
+        pass
     except Exception:
         pass
     job = RagJob(tenant_id=source.tenant_id, source_id=source.id, status="queued", error=None)

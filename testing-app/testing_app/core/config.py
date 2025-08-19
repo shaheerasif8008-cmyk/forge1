@@ -32,7 +32,13 @@ class Settings:
 
         return Settings(
             db_url=db_url,
-            target_api_url_default=os.getenv(f"{ENV_PREFIX}TARGET_API_URL_DEFAULT", "http://localhost:8000"),
+            # Prefer TESTING_TARGET_API_URL_DEFAULT; fallback to TESTING_TARGET_API_URL; finally TARGET_API_URL
+            target_api_url_default=(
+                os.getenv(f"{ENV_PREFIX}TARGET_API_URL_DEFAULT")
+                or os.getenv(f"{ENV_PREFIX}TARGET_API_URL")
+                or os.getenv("TARGET_API_URL")
+                or "http://localhost:8000"
+            ),
             service_key=os.getenv(f"{ENV_PREFIX}SERVICE_KEY", ""),
             artifacts_url=os.getenv(f"{ENV_PREFIX}ARTIFACTS_URL"),
             report_secret=os.getenv(f"{ENV_PREFIX}REPORT_SECRET", "dev-secret"),

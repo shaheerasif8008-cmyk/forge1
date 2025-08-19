@@ -32,7 +32,8 @@ class ToolOut(BaseModel):
 @router.get("/registry", response_model=list[ToolOut])
 def list_registry(db: Session = Depends(get_session), user=Depends(_require_admin)) -> list[ToolOut]:  # noqa: B008
     try:
-        ToolManifest.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     rows = db.query(ToolManifest).all()
@@ -118,7 +119,8 @@ def enable_tool(tool_name: str, payload: EnableIn, db: Session = Depends(get_ses
     _validate_config(manifest.config_schema, payload.config)
     # Ensure tenant_tools table exists in dev/tests
     try:
-        TenantToolConfig.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     row = db.query(TenantToolConfig).filter(TenantToolConfig.tenant_id == user["tenant_id"], TenantToolConfig.tool_name == tool_name).first()

@@ -33,7 +33,7 @@ class CanaryIn(BaseModel):
 @router.post("/employee/{employee_id}/canary")
 def set_canary(employee_id: str, payload: CanaryIn, db: Session = Depends(get_session), user=Depends(require_admin)) -> dict[str, Any]:  # noqa: B008
     tenant_id = str(user.get("tenant_id", ""))
-    CanaryConfig.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Table managed by Alembic
     cfg = (
         db.query(CanaryConfig)
         .filter(CanaryConfig.tenant_id == tenant_id, CanaryConfig.employee_id == employee_id)

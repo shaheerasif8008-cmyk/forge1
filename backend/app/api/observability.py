@@ -34,7 +34,8 @@ class SpanOut(BaseModel):
 
 @router.get("/traces/{trace_id}", response_model=list[SpanOut])
 def get_trace(trace_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_session)) -> list[SpanOut]:  # noqa: B008
-	TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+	# Table managed by Alembic
+	pass
 	rows = (
 		db.query(TraceSpan)
 		.filter(TraceSpan.trace_id == trace_id)
@@ -68,7 +69,8 @@ def list_recent_traces(
 	db: Session = Depends(get_session),  # noqa: B008
 	limit: int = Query(default=50, ge=1, le=200),
 ) -> list[SpanOut]:
-	TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+	# Table managed by Alembic
+	pass
 	rows = (
 		db.query(TraceSpan)
 		.filter(TraceSpan.tenant_id == current_user.get("tenant_id"))
@@ -119,10 +121,6 @@ def list_consensus_logs(limit: int = 100, current_user=Depends(get_current_user)
 @router.get("/spend/monthly")
 def spend_monthly(current_user=Depends(get_current_user), db: Session = Depends(get_session)) -> dict[str, Any]:  # noqa: B008
     # Aggregate from daily usage and approximate cost using provider map where possible
-    try:
-        DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     rows = (
         db.query(DailyUsageMetric)
         .filter(DailyUsageMetric.tenant_id == current_user["tenant_id"])
@@ -143,8 +141,6 @@ class ReplayRequest(BaseModel):
 @router.post("/replay")
 def time_travel_replay(payload: ReplayRequest, current_user=Depends(get_current_user), db: Session = Depends(get_session)) -> dict[str, Any]:  # noqa: B008
 	# Store a RunFailure queued entry to be consumed by a worker that replays deterministically
-	TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
-	RunFailure.__table__.create(bind=db.get_bind(), checkfirst=True)
 	root = (
 		db.query(TraceSpan)
 		.filter(TraceSpan.trace_id == payload.trace_id)
@@ -176,7 +172,8 @@ class RootCause(BaseModel):
 
 @router.get("/root_cause/{trace_id}", response_model=RootCause)
 def root_cause(trace_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_session)) -> RootCause:  # noqa: B008
-	TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+	# Table managed by Alembic
+	pass
 	spans = db.query(TraceSpan).filter(TraceSpan.trace_id == trace_id).all()
 	# naive: find first error span, walk parents up to root
 	by_id = {s.span_id: s for s in spans}

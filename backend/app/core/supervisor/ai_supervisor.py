@@ -31,11 +31,6 @@ class ActionContext:
 def _load_policy(tenant_id: str) -> SupervisorPolicy | None:
     try:
         with SessionLocal() as db:
-            # Ensure table presence in dev/test; do not error if missing
-            try:
-                SupervisorPolicy.__table__.create(bind=db.get_bind(), checkfirst=True)
-            except Exception:
-                pass
             return db.get(SupervisorPolicy, tenant_id)
     except SQLAlchemyError:
         return None
@@ -86,7 +81,6 @@ def review_action(action: str, context: dict[str, Any]) -> dict[str, str]:
         # Create an approval ticket
         try:
             with SessionLocal() as db:
-                ActionApproval.__table__.create(bind=db.get_bind(), checkfirst=True)
                 db.add(ActionApproval(tenant_id=tenant_id, employee_id=str(context.get("employee_id") or ""), action=action_name, payload=context, status="pending"))
                 db.commit()
         except Exception:

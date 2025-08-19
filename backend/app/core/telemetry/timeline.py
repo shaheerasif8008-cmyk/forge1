@@ -121,7 +121,8 @@ def normalize_events(
     # Include AI insights for admin context (best-effort)
     try:
         from ...db.models import AiInsight
-        AiInsight.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
         insights = (
             db.query(AiInsight)
             .order_by(desc(AiInsight.id))
@@ -144,7 +145,8 @@ def normalize_events(
     # Include performance snapshots
     try:
         from ...db.models import PerformanceSnapshot
-        PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
         snaps = (
             db.query(PerformanceSnapshot)
             .filter(PerformanceSnapshot.employee_id == employee_id)
@@ -171,7 +173,8 @@ def normalize_events(
     # Include tracing spans root for graph render
     try:
         from ...db.models import TraceSpan
-        TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
         roots = (
             db.query(TraceSpan)
             .filter(TraceSpan.employee_id == employee_id, TraceSpan.parent_span_id.is_(None))

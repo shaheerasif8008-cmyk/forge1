@@ -16,6 +16,12 @@ def _db() -> Session:
 
 def test_canary_config_and_diff_scoring() -> None:
     db = _db()
+    # Clean existing row for idempotent test runs
+    try:
+        db.execute("DELETE FROM canary_configs WHERE tenant_id='t1' AND employee_id='e1'")
+        db.commit()
+    except Exception:
+        db.rollback()
     CanaryConfig.__table__.create(bind=db.get_bind(), checkfirst=True)
     cfg = CanaryConfig(tenant_id="t1", employee_id="e1", shadow_employee_id="e2", percent=100, threshold=0.5, windows=3, status="active")
     db.add(cfg)

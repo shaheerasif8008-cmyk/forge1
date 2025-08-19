@@ -5,17 +5,16 @@ import logging
 from sqlalchemy.orm import Session
 
 from .models import Tenant, User, MarketplaceTemplate, ToolManifest
-from .session import SessionLocal, create_tables
+from .session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 
 def init_db() -> None:
-    """Initialize the database with tables and initial data."""
+    """Initialize the database with initial data only (migrations manage DDL)."""
     try:
-        # Create tables
-        create_tables()
-        logger.info("Database tables created successfully")
+        # Skip table creation; Alembic migrations must be applied beforehand
+        logger.info("Skipping table creation; managed by Alembic migrations")
 
         # Create initial data (dev only)
         import os
@@ -41,8 +40,7 @@ def init_db() -> None:
 
                 with _SL() as _s:
                     try:
-                        # Ensure table exists then clear
-                        FeatureFlag.__table__.create(bind=_s.get_bind(), checkfirst=True)
+                        # Assume table exists; if not, tests should run migrations first
                         _s.query(FeatureFlag).delete()
                         _s.commit()
                         logger.info("Cleared feature_flags table for test isolation")
@@ -61,7 +59,14 @@ def create_initial_data(db: Session) -> None:
     """Create initial data for the application."""
     # Ensure default tenant exists
     default_tenant_id = "default"
-    existing_tenant = db.get(Tenant, default_tenant_id)
+    # Tolerate older schemas missing updated_at column
+    try:
+        existing_tenant = db.get(Tenant, default_tenant_id)
+    except Exception:
+        existing_tenant = db.execute(
+            __import__("sqlalchemy").text("SELECT id, name FROM tenants WHERE id = :id"),
+            {"id": default_tenant_id},
+        ).first()
     if existing_tenant is None:
         tenant = Tenant(id=default_tenant_id, name="Default Tenant")
         db.add(tenant)
@@ -89,7 +94,6 @@ def create_initial_data(db: Session) -> None:
 
         # Seed marketplace templates (idempotent)
         try:
-            MarketplaceTemplate.__table__.create(bind=db.get_bind(), checkfirst=True)
             existing_keys = {r.key for r in db.query(MarketplaceTemplate).all()}
             seeds = [
                 ("lead_qualifier", "Lead Qualifier", "sales", "Qualify inbound leads", ["api_caller", "csv_reader"], {}),
@@ -120,7 +124,6 @@ def create_initial_data(db: Session) -> None:
             db.rollback()
         # Seed tool manifests (idempotent)
         try:
-            ToolManifest.__table__.create(bind=db.get_bind(), checkfirst=True)
             existing = {r.name for r in db.query(ToolManifest).all()}
             manifests = [
                 ToolManifest(

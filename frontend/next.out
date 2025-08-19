@@ -1,0 +1,10 @@
+   ▲ Next.js 15.4.6
+   - Local:        http://localhost:3000
+   - Network:      http://10.73.1.92:3000
+
+ ✓ Starting...
+ ⚠ Warning: Found multiple lockfiles. Selecting /Users/shaheer/Forge_1/package-lock.json.
+   Consider removing the lockfiles at:
+   * /Users/shaheer/Forge_1/frontend/package-lock.json
+
+ ✓ Ready in 305ms

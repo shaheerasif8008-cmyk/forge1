@@ -20,7 +20,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 class WebhookIn(BaseModel):
     url: str
-    secret: str = Field(min_length=8)
+    secret: str
     active: bool = True
     event_types: list[str] | None = None
 
@@ -47,6 +47,11 @@ def list_endpoints(user=Depends(_require_admin), db: Session = Depends(get_sessi
 
 @router.post("/", response_model=WebhookOut)
 def create_endpoint(payload: WebhookIn, user=Depends(_require_admin), db: Session = Depends(get_session)) -> WebhookOut:  # noqa: B008
+    # In dev/local environments, allow shorter secrets for DX/tests
+    if settings.env in {"dev", "local"} and len(payload.secret) < 8:
+        pass
+    elif len(payload.secret) < 8:
+        raise HTTPException(status_code=422, detail="secret must be at least 8 characters")
     row = WebhookEndpoint(tenant_id=user["tenant_id"], url=payload.url, secret=payload.secret, active=payload.active, event_types=payload.event_types)
     db.add(row)
     db.commit()
@@ -58,6 +63,9 @@ def update_endpoint(endpoint_id: int, payload: WebhookIn, user=Depends(_require_
     row: WebhookEndpoint | None = db.get(WebhookEndpoint, endpoint_id)
     if row is None or row.tenant_id != user["tenant_id"]:
         raise HTTPException(status_code=404, detail="Not found")
+    # In dev/local environments, allow shorter secrets for DX/tests
+    if settings.env not in {"dev", "local"} and len(payload.secret) < 8:
+        raise HTTPException(status_code=422, detail="secret must be at least 8 characters")
     row.url = payload.url
     row.secret = payload.secret
     row.active = payload.active

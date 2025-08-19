@@ -21,6 +21,9 @@ def upgrade() -> None:
     # Drop and recreate the FK with ON DELETE CASCADE if it exists
     conn = op.get_bind()
     insp = sa.inspect(conn)
+    # If table does not exist (fresh installs before task_executions), noop
+    if "task_executions" not in insp.get_table_names():
+        return
     fks = insp.get_foreign_keys("task_executions")
     for fk in fks:
         if fk.get("referred_table") == "employees" and set(fk.get("constrained_columns", [])) == {"employee_id"}:
@@ -40,6 +43,8 @@ def downgrade() -> None:
     # Revert to FK without cascade
     conn = op.get_bind()
     insp = sa.inspect(conn)
+    if "task_executions" not in insp.get_table_names():
+        return
     fks = insp.get_foreign_keys("task_executions")
     for fk in fks:
         if fk.get("referred_table") == "employees" and set(fk.get("constrained_columns", [])) == {"employee_id"}:

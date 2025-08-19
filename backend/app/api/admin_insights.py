@@ -27,7 +27,8 @@ def list_insights(
     _require_admin(user)
     # Ensure table exists in dev/CI
     try:
-        AiInsight.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     rows = db.query(AiInsight).order_by(AiInsight.id.desc()).limit(100).all()

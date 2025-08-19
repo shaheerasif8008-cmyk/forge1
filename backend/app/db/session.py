@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..core.config import settings
+from sqlalchemy import text
 from .models import Base
 
 
@@ -33,12 +34,17 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 
-# Create tables if they don't exist
-def create_tables() -> None:
-    """Create all tables defined in models."""
-    Base.metadata.create_all(bind=engine)
+# Deprecated: runtime DDL. Kept only for explicit test/dev utilities when needed.
+def create_tables() -> None:  # pragma: no cover
+    """Deprecated helper. Use Alembic migrations instead."""
+    pass
+
+
+_schema_ensured = True  # Schema is managed by Alembic; do not run runtime DDL
 
 
 def get_session() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session
+
+# No import-time schema mutation; Alembic manages schema

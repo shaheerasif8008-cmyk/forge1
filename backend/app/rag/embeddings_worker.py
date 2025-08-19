@@ -39,7 +39,7 @@ async def run_embeddings_worker(stop_event: asyncio.Event | None = None) -> None
             chunk_id = str(task.get("chunk_id"))
             with SessionLocal() as db:
                 try:
-                    RagChunk.__table__.create(bind=db.get_bind(), checkfirst=True)
+                    # Tables managed by Alembic
                     ch = db.get(RagChunk, chunk_id)
                     if not ch:
                         continue

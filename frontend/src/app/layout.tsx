@@ -6,6 +6,7 @@ import { QueryProvider } from "@/providers/query-provider";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { Toaster } from "react-hot-toast";
 import TopNavClient from "@/components/TopNavClient";
+import AppSidebar from "@/components/AppSidebar";
 
 const inter = Inter({ 
   subsets: ["latin"],
@@ -38,7 +39,12 @@ export default function RootLayout({
                 <div className="w-full text-center text-xs py-1 bg-warning text-black">{envLabel}</div>
               )}
               <TopNavClient />
-              {children}
+              <div className="max-w-screen-2xl mx-auto p-4">
+                <div className="grid grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)] gap-4">
+                  <div className="md:h-[calc(100dvh-70px)] sticky top-2"><AppSidebar /></div>
+                  <main className="rounded-2xl bg-card border shadow-sm min-h-[60vh]">{children}</main>
+                </div>
+              </div>
               <Toaster
                 position="top-right"
                 toastOptions={{

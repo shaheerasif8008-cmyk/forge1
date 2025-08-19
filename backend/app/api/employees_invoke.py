@@ -77,13 +77,6 @@ async def invoke_employee(
     db: Session = Depends(get_session),  # noqa: B008
 ) -> InvokeOut:
     # Authenticate via Employee-Key header only
-    # Ensure table exists in dev/CI
-    try:
-        from ..db.models import EmployeeKey
-
-        EmployeeKey.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     principal = authenticate_employee_key(
         request.headers.get("Employee-Key"), db=db, pepper=settings.employee_key_pepper
     )

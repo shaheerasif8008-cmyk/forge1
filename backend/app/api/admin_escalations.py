@@ -30,11 +30,6 @@ def list_escalations(
     # Enforce tenant scoping for admin views
     if tenant_id != user.get("tenant_id"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    # Ensure table exists in dev/test
-    try:
-        Escalation.__table__.create(bind=db.get_bind(), checkfirst=True)
-    except Exception:
-        pass
     q = db.query(Escalation).filter(Escalation.tenant_id == tenant_id)
     if status_filter:
         q = q.filter(Escalation.status == status_filter)

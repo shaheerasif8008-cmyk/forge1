@@ -57,10 +57,6 @@ class ThompsonRouter:
             return sc
         # Fallback to Postgres hydration
         with SessionLocal() as db:
-            try:
-                RouterMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-            except Exception:
-                pass
             rows = (
                 db.query(RouterMetric)
                 .filter(RouterMetric.tenant_id == self.tenant_id, RouterMetric.task_type == self.task_type)
@@ -151,7 +147,6 @@ class ThompsonRouter:
     def _upsert_db(self, db: Session, m: ModelScorecard) -> None:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        RouterMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
         # Approximate mu/sigma and p95 from current stats
         lat_mu = int(m.latency_stats.mean) if m.latency_stats.count else None
         lat_p95 = int(m.latency_stats.approx_p95()) if m.latency_stats.count else None

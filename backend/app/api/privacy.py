@@ -37,7 +37,8 @@ def _require_admin(user=Depends(get_current_user)):
 def get_policy(user=Depends(_require_admin), db: Session = Depends(get_session)) -> PolicyOut:  # noqa: B008
     # Ensure table exists in dev/CI
     try:
-        DataLifecyclePolicy.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     row = db.get(DataLifecyclePolicy, user["tenant_id"]) or DataLifecyclePolicy(tenant_id=user["tenant_id"], chat_ttl_days=None, tool_io_ttl_days=None, pii_redaction_enabled=False)
@@ -48,7 +49,8 @@ def get_policy(user=Depends(_require_admin), db: Session = Depends(get_session))
 def set_policy(payload: PolicyIn, user=Depends(_require_admin), db: Session = Depends(get_session)) -> PolicyOut:  # noqa: B008
     # Ensure table exists in dev/CI
     try:
-        DataLifecyclePolicy.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     row = db.get(DataLifecyclePolicy, user["tenant_id"]) or DataLifecyclePolicy(tenant_id=user["tenant_id"]) 

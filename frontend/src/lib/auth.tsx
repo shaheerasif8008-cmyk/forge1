@@ -34,9 +34,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [refreshToken, setRefreshTokenState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Enable localStorage auth by default in dev if not configured
+  const useLs = config.useLocalStorageAuth || process.env.NODE_ENV === "development";
+
   // Token management functions
   const getAccessToken = (): string | null => {
-    if (config.useLocalStorageAuth) {
+    if (useLs) {
       try {
         return localStorage.getItem("forge1_token");
       } catch {
@@ -47,7 +50,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   };
 
   const getRefreshToken = (): string | null => {
-    if (config.useLocalStorageAuth) {
+    if (useLs) {
       try {
         return localStorage.getItem("forge1_refresh_token");
       } catch {
@@ -62,7 +65,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (typeof refresh !== "undefined") {
       setRefreshTokenState(refresh);
     }
-    if (config.useLocalStorageAuth) {
+    if (useLs) {
       try {
         if (access) localStorage.setItem("forge1_token", access);
         else localStorage.removeItem("forge1_token");
@@ -123,15 +126,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
       const r = await apiClient.loginV2(email, password);
       setTokens(r.access_token, r.refresh_token);
     } catch (e: unknown) {
-      const code = (e as { response?: { status?: number } })?.response?.status;
-      if (code === 403 || code === 404) {
+      const code = (e as { status?: number })?.status;
+      // Fallback to legacy form login, and in dev allow password "admin" against v1
+      if (code === 403 || code === 404 || process.env.NODE_ENV === "development") {
         const r1 = await apiClient.loginV1(email, password);
         setTokens(r1.access_token);
       } else {
         throw e;
       }
     }
-    // Fetch user info
+    // Wait a tick for token propagation, then fetch user info
+    await new Promise((r) => setTimeout(r, 100));
     const userData = await apiClient.getMe();
     setUser(userData);
   };
@@ -153,7 +158,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     refreshToken,
     login,
     logout,
-    isAuthenticated: !!token && !!user,
+    isAuthenticated: !!(getAccessToken()) && !!user,
     loading,
   };
 

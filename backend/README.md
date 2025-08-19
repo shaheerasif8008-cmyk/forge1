@@ -232,8 +232,8 @@ backend/
 |----------|-------------|---------|
 | `ENV` | Environment (dev/prod) | `dev` |
 | `JWT_SECRET` | JWT signing secret | `change-me` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://forge:forge@localhost:5432/forge` |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://forge:forge@127.0.0.1:5542/forge1_local` |
+| `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6382/0` |
 | `BACKEND_CORS_ORIGINS` | CORS allowed origins | `*` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `OPENAI_API_KEY` | OpenAI key for LLMs/embeddings | - |

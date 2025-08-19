@@ -33,11 +33,6 @@ def create_escalation(
   tenant_id = str(user.get("tenant_id", ""))
   if not tenant_id:
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-  # Ensure table exists in dev/test
-  try:
-    Escalation.__table__.create(bind=db.get_bind(), checkfirst=True)
-  except Exception:
-    pass
   row = Escalation(
     tenant_id=tenant_id,
     employee_id=payload.employee_id,

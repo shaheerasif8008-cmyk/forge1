@@ -22,6 +22,11 @@ from .core.logging_config import (
 )
 from .core.security.rate_limit import sliding_window_allow
 from .db.init_db import init_db
+from sqlalchemy import create_engine, text as _sql_text
+from redis import Redis
+from alembic.config import Config as _AlembicConfig
+from alembic.script import ScriptDirectory as _ScriptDirectory
+from alembic.runtime.environment import EnvironmentContext as _EnvCtx
 from .core.telemetry.prom_metrics import observe_request
 from .db.models import AuditLog
 from .db.session import get_session
@@ -34,6 +39,7 @@ from .interconnect.workers import (
     start_ceo_ai_worker,
 )
 from .core.sandbox import start_sandbox_cleanup_worker
+from .proactivity.scheduler import start_scheduler, shutdown_scheduler
 
 
 # Configure structured logging as early as possible
@@ -69,11 +75,71 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         # Do not block startup in dev/CI
         pass
+    # Start proactivity scheduler if enabled
+    try:
+        if settings.proactivity_enabled:
+            start_scheduler()
+    except Exception:
+        pass
+
+    # Log safe config summary for diagnostics (avoid secrets)
+    try:
+        logger.info(
+            "Config summary",
+            extra={
+                "event": "config_summary",
+                "env": settings.env,
+                "db": (settings.database_url.split("@")[-1] if settings.database_url else ""),
+                "redis": settings.redis_url,
+                "cors": settings.backend_cors_origins,
+                "log_level": settings.log_level,
+            },
+        )
+    except Exception:
+        pass
+
+    # Non-blocking health checks at startup
+    try:
+        # DB
+        try:
+            eng = create_engine(settings.database_url, pool_pre_ping=True, future=True)
+            with eng.connect() as conn:
+                conn.execute(_sql_text("SELECT 1"))
+            logger.info("Startup DB check ok", extra={"event": "startup_check", "db": True})
+        except Exception as e:  # noqa: BLE001
+            logger.error("Startup DB check failed", exc_info=e, extra={"event": "startup_check", "db": False})
+        # Redis
+        try:
+            r = Redis.from_url(settings.redis_url, decode_responses=True)
+            _ = r.ping()
+            r.close()
+            logger.info("Startup Redis check ok", extra={"event": "startup_check", "redis": True})
+        except Exception as e:  # noqa: BLE001
+            logger.error("Startup Redis check failed", exc_info=e, extra={"event": "startup_check", "redis": False})
+        # Migrations at head
+        try:
+            cfg = _AlembicConfig("alembic.ini")
+            script = _ScriptDirectory.from_config(cfg)
+            from alembic.runtime.migration import MigrationContext as _MigCtx
+            eng = create_engine(settings.database_url, pool_pre_ping=True, future=True)
+            with eng.connect() as conn:
+                ctx = _MigCtx.configure(conn)
+                current = ctx.get_current_revision()
+            heads = set(script.get_heads())
+            ok = (current in heads) if heads else True
+            logger.info("Startup migrations check", extra={"event": "startup_check", "migrations": ok, "current_rev": current, "heads": list(heads)})
+        except Exception as e:  # noqa: BLE001
+            logger.error("Startup migrations check failed", exc_info=e, extra={"event": "startup_check", "migrations": False})
+    except Exception:
+        pass
 
     yield
 
     # Shutdown
-    pass
+    try:
+        shutdown_scheduler()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Forge 1 Backend", lifespan=lifespan)
@@ -118,6 +184,34 @@ app.include_router(api_router, prefix="/api/v1")
 # Also expose the public EaaS invoke API at top-level /v1/employees
 app.include_router(employees_invoke_router)
 
+# Prometheus metrics endpoint (public in dev/local; require admin JWT in other envs)
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest  # type: ignore
+    from .api.auth import decode_access_token
+
+    @app.get("/metrics")
+    async def metrics_endpoint(request: Request) -> Response | dict[str, str]:  # type: ignore[override]
+        # Gate in non-dev/local environments
+        if settings.env not in {"dev", "local"}:
+            auth = request.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                return Response(status_code=401)
+            try:
+                payload = decode_access_token(auth.split(" ", 1)[1])
+                roles = payload.get("roles", [])
+                if isinstance(roles, str):
+                    roles = [roles]
+                if "admin" not in set(roles or []):
+                    return Response(status_code=403)
+            except Exception:
+                return Response(status_code=401)
+        data = generate_latest()
+        return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+except Exception:
+    @app.get("/metrics")
+    async def metrics_unavailable() -> dict[str, str]:  # type: ignore[override]
+        return {"status": "metrics_unavailable"}
+
 
 @app.middleware("http")
 async def audit_logging_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -161,10 +255,10 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
             pass
 
     # Set logging context
-        set_request_context(
+    set_request_context(
         trace_id=trace_id,
         tenant_id=tenant_id or None,
-            user_id=user_id or None,
+        user_id=user_id or None,
         method=request.method,
         path=str(request.url.path),
     )
@@ -189,9 +283,7 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
                 logger.warning("Rate limit exceeded", extra={"event": "rate_limit"})
                 raise Exception("rate_limited")
 
-        logger.info(
-            "Request start",
-        )
+        logger.info("Request start")
         # Multi-region cost-based routing: forward non-critical paths to cheaper healthy regions
         forwarded = False
         try:
@@ -226,8 +318,12 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
         logger.exception("Unhandled request error", exc_info=exc)
         if response is None:
             from fastapi.responses import JSONResponse
-
-            response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+            # In dev/local, include traceback for DX; in other envs, keep terse
+            if settings.env in {"dev", "local"}:
+                import traceback
+                response = JSONResponse({"detail": str(exc), "trace": traceback.format_exc()}, status_code=500)
+            else:
+                response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
             status_code = 500
     finally:
         # Add trace id header for clients
@@ -280,9 +376,7 @@ async def audit_logging_middleware(request: Request, call_next):  # type: ignore
             pass
 
         # Log the end of request
-        logger.info(
-            "Request end",
-        )
+        logger.info("Request end")
         # Clear logging context at end of request
         clear_request_context()
 

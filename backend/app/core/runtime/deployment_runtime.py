@@ -14,6 +14,7 @@ fields or tools are missing.
 from __future__ import annotations
 
 from typing import Any
+import asyncio
 import logging
 
 from ..orchestrator.ai_orchestrator import AIOrchestrator, TaskResult
@@ -27,6 +28,7 @@ from ...shadow.differ import semantic_diff_score
 from ..quality.feedback_loop import choose_best_strategy
 from ...db.session import SessionLocal
 from ...db.models import PerformanceSnapshot, EmployeeVersion
+from ..config import settings
 
 
 class DeploymentRuntime:
@@ -56,6 +58,9 @@ class DeploymentRuntime:
         # Load built-in tools and ensure required ones are available
         self.registry.load_builtins()
         self._loaded_tools: dict[str, Any] = self._load_required_tools(self.config.get("tools", []))
+        # Concurrency semaphore per runtime instance
+        max_conc = max(1, int(getattr(settings, "max_concurrency_per_employee", 3)))
+        self._semaphore = asyncio.Semaphore(max_conc)
 
     @staticmethod
     def _validate_config(cfg: dict[str, Any]) -> None:
@@ -148,6 +153,7 @@ class DeploymentRuntime:
             "rag_top_k": int(rag_cfg.get("top_k", 5)),
             "tools": list(self._loaded_tools.keys()),
             "role": {"name": role.get("name"), "description": role.get("description")},
+            "roles": list(self.config.get("roles", []) or []),
             # pass through optional defaults/strategy to orchestrator
             "prompt_prefix": str(defaults.get("prompt_prefix", "")),
             "router": (self.config.get("router") or {}),
@@ -162,7 +168,7 @@ class DeploymentRuntime:
         # If multiple prompt variants are provided, we try them across iterations and later pick best
         variants = run_ctx.get("prompt_variants") if isinstance(run_ctx.get("prompt_variants"), list) else []
         trial_metrics: list[dict[str, Any]] = []
-        for idx in range(max(1, iterations)):
+        async def _one_iteration(idx: int) -> TaskResult:
             # propagate trace id to context for each iteration
             trace_id = get_trace_id()
             if trace_id:
@@ -174,7 +180,15 @@ class DeploymentRuntime:
                     run_ctx["prompt_variants"] = [variants[idx % len(variants)]]
                 except Exception:
                     pass
-            res = await self.orchestrator.run_task(prompt, context=run_ctx)
+            async with self._semaphore:
+                return await self.orchestrator.run_task(prompt, context=run_ctx)
+
+        tasks: list[asyncio.Task[TaskResult]] = []
+        for idx in range(max(1, iterations)):
+            # propagate trace id to context for each iteration
+            tasks.append(asyncio.create_task(_one_iteration(idx)))
+        for t in tasks:
+            res = await t
             # Shadow canary tee (best-effort, optional)
             try:
                 tenant_id = str(run_ctx.get("tenant_id", ""))
@@ -293,7 +307,6 @@ class DeploymentRuntime:
                             if isinstance(best_variant, str) and best_variant.strip():
                                 # Build next version snapshot
                                 # Determine next version
-                                EmployeeVersion.__table__.create(bind=db.get_bind(), checkfirst=True)
                                 last = (
                                     db.query(EmployeeVersion)
                                     .filter(EmployeeVersion.employee_id == employee_id)

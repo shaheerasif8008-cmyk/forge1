@@ -67,5 +67,12 @@ class Settings(BaseSettings):
     # CSV prefixes considered non-critical (eligible for cost-based routing)
     non_critical_path_prefixes: str = Field(default="/api/v1/employees,/api/v1/ai/execute", alias="NON_CRITICAL_PATH_PREFIXES")
 
+    # Proactivity scheduler
+    proactivity_enabled: bool = Field(default=False, alias="PROACTIVITY_ENABLED")
+    schedule_period_sec: int = Field(default=300, alias="SCHEDULE_PERIOD_SEC")
+
+    # Concurrency controls
+    max_concurrency_per_employee: int = Field(default=3, alias="MAX_CONCURRENCY_PER_EMPLOYEE")
+
 
 settings = Settings()

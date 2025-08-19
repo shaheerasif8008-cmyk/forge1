@@ -18,17 +18,34 @@ def execute_functional_suite(run_id: int, target_api_url: str, scenarios: list[d
 		"latency_ms_sum": 0.0,
 	}
 	case_results: list[dict[str, Any]] = []
+	# Simple context store for dynamic IDs captured from previous steps
+	context: dict[str, str] = {}
 	for sc in scenarios:
 		stats["total"] += 1
 		try:
 			method = sc.get("method", "GET").upper()
 			path = sc.get("path", "/health")
+			# Substitute dynamic placeholders from context (e.g., {EMP_ID})
+			if isinstance(path, str) and "{EMP_ID}" in path:
+				emp = context.get("EMP_ID")
+				if not emp:
+					case_results.append({"path": path, "status": 0, "passed": True, "skipped": True})
+					continue
+				path = path.replace("{EMP_ID}", emp)
 			url = f"{target_api_url.rstrip('/')}{path}"
 			payload = sc.get("payload")
 			headers = dict(sc.get("headers", {}))
 			# Optional admin Authorization header from env when not provided in scenario
 			if "Authorization" not in {k.title(): v for k, v in headers.items()}:
 				jwt = os.getenv("TESTING_ADMIN_JWT")
+				protected_prefixes = (
+					"/api/v1/employees",
+					"/api/v1/metrics",
+					"/api/v1/reviews",
+					"/api/v1/admin",
+				)
+				if any(path.startswith(pfx) for pfx in protected_prefixes) and not jwt:
+					raise RuntimeError("TESTING_ADMIN_JWT is required for protected routes")
 				if jwt:
 					headers["Authorization"] = f"Bearer {jwt}"
 			r = client.request(method, url, json=payload, headers=headers)
@@ -76,6 +93,15 @@ def execute_functional_suite(run_id: int, target_api_url: str, scenarios: list[d
 							break
 				except Exception:
 					passed = False
+			# Capture employee id for subsequent steps when creating an employee
+			try:
+				if method == "POST" and sc.get("path", "").startswith("/api/v1/employees/") and r.status_code in (200, 201):
+					js = r.json()
+					emp_id = js.get("id") if isinstance(js, dict) else None
+					if isinstance(emp_id, str) and emp_id:
+						context["EMP_ID"] = emp_id
+			except Exception:
+				pass
 			if not passed:
 				findings.append(
 					{

@@ -58,10 +58,16 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     url = _resolve_url()
-    # When prefix is empty string, engine_from_config expects key 'url'
-    connectable = engine_from_config({"url": url}, prefix="", poolclass=pool.NullPool)
+    # Optional diagnostics to STDOUT for CI/local debugging
+    if os.getenv("ALEMBIC_DEBUG"):
+        print(f"[alembic] Using URL: {url}")
+    connectable = engine_from_config({"url": url, "echo": os.getenv("ALEMBIC_ECHO") == "1"}, prefix="", poolclass=pool.NullPool)
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            transaction_per_migration=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

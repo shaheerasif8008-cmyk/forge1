@@ -33,7 +33,8 @@ def list_templates(
 ) -> list[TemplateOut]:
     # Ensure table exists in minimal test envs
     try:
-        MarketplaceTemplate.__table__.create(bind=db.get_bind(), checkfirst=True)
+        # Table managed by Alembic
+        pass
     except Exception:
         pass
     q = db.query(MarketplaceTemplate).filter(MarketplaceTemplate.enabled.is_(True))

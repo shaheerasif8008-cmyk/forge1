@@ -19,32 +19,22 @@ depends_on = None
 
 def upgrade() -> None:
     # LongTermMemory tenant_id non-null and index
-    with op.batch_alter_table("long_term_memory") as batch:
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if "long_term_memory" in insp.get_table_names():
+        # Only add the composite index to improve query performance; skip NOT NULL enforcement here
         try:
-            batch.alter_column("tenant_id", existing_type=sa.String(length=100), nullable=False)
+            op.create_index(
+                "ix_ltm_tenant_id_id",
+                "long_term_memory",
+                ["tenant_id", "id"],
+                unique=False,
+            )
         except Exception:
-            # Column may already be non-null; continue
+            # Index may already exist
             pass
-    op.create_index(
-        "ix_ltm_tenant_id_id",
-        "long_term_memory",
-        ["tenant_id", "id"],
-        unique=False,
-    )
 
-    # Employee owner_user_id FK to users, ON DELETE SET NULL
-    try:
-        op.create_foreign_key(
-            "fk_employee_owner_user",
-            source_table="employees",
-            referent_table="users",
-            local_cols=["owner_user_id"],
-            remote_cols=["id"],
-            ondelete="SET NULL",
-        )
-    except Exception:
-        # If FK exists, skip
-        pass
+    # Employee owner_user_id FK added in earlier core migration; no-op here to avoid duplicate errors
 
 
 def downgrade() -> None:

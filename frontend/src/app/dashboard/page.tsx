@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api";
@@ -9,7 +10,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContai
 
 export default function DashboardPage() {
   const { user, loading } = useAuth();
-  const { data: summary, isLoading: loadingSummary } = useQuery({
+  const { data: summary, isLoading: loadingSummary, error: summaryErr, refetch } = useQuery({
     queryKey: ["metrics-summary"],
     queryFn: () => apiClient.getClientMetricsSummary(168),
     enabled: !loading,
@@ -47,17 +48,17 @@ export default function DashboardPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-semibold">
+          <h1 data-testid="dashboard-title" className="text-3xl font-semibold">
             Your AI workforce at a glance
           </h1>
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground" data-testid="dashboard-welcome">
             Welcome back, {user?.email || "User"}
           </p>
         </div>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4" data-testid="kpi-cards">
         {kpi.map((x) => (
           <KPICard key={x.title} title={x.title} value={x.value} loading={loadingSummary || loadingActive} />
         ))}
@@ -65,15 +66,19 @@ export default function DashboardPage() {
 
       {/* Charts and Activity Feed */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2 shadow-card">
+        <Card className="lg:col-span-2 shadow-card" data-testid="chart-card">
           <CardHeader>
             <CardTitle>7-Day Trends</CardTitle>
             <CardDescription>Tokens and latency over time</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-64">
+            <div className="h-64" data-testid="chart-traffic">
               {loadingSummary ? (
                 <div className="h-full flex items-center justify-center text-muted-foreground">Loading metrics...</div>
+              ) : summaryErr ? (
+                <div className="space-y-2">
+                  <Alert variant="destructive">Failed to load metrics. <button className="underline" onClick={() => refetch()}>Retry</button></Alert>
+                </div>
               ) : chartData.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={chartData}>
@@ -93,7 +98,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card className="shadow-card">
+        <Card className="shadow-card" data-testid="activity-feed">
           <CardHeader>
             <CardTitle>Activity Feed</CardTitle>
             <CardDescription>Last 20 events</CardDescription>
@@ -113,7 +118,7 @@ export default function DashboardPage() {
 
 function KPICard({ title, value, loading }: { title: string; value: string; loading?: boolean }) {
   return (
-    <Card className="shadow-card">
+    <Card className="shadow-card" data-testid={`kpi-${title.toLowerCase().replace(/[^a-z]+/g, "-")}`}>
       <CardContent className="p-4">
         <div className="text-sm font-medium text-muted-foreground">{title}</div>
         <div className="text-2xl font-semibold mt-1">{loading ? <Skeleton className="h-6 w-16" /> : value}</div>
@@ -124,7 +129,7 @@ function KPICard({ title, value, loading }: { title: string; value: string; load
 
 function DashboardSkeleton() {
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6" data-testid="dashboard-skeleton">
       <div className="space-y-2">
         <Skeleton className="h-8 w-96" />
         <Skeleton className="h-4 w-64" />

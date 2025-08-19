@@ -37,12 +37,15 @@ def _load_rules() -> list[str]:
 def evaluate(subject: str, action: str, context: dict[str, Any]) -> PolicyDecision:
     """Evaluate CEL-like rules.
 
-    For simplicity, we interpret rules as JSON lines with fields: subject, action, allow, match (substring in URL, tool, domain), reason.
-    In production, replace with a CEL engine.
+    Rules are JSONL with fields: subject, action, allow, match (substring in URL, tool, domain), reason.
+    - Multiple rules may match; DENY takes precedence over ALLOW.
+    - If no rules match, default allow.
     """
     rules_src = _load_rules()
     tenant_id = str(context.get("tenant_id") or "")
-    decision = PolicyDecision(allow=True, reason="default allow")
+    allow_reason: str | None = None
+    deny_reason: str | None = None
+
     for src in rules_src:
         for line in src.splitlines():
             line = line.strip()
@@ -60,12 +63,15 @@ def evaluate(subject: str, action: str, context: dict[str, Any]) -> PolicyDecisi
             hay = json.dumps(context)
             if match and match not in hay:
                 continue
-            decision = PolicyDecision(allow=bool(rule.get("allow", True)), reason=str(rule.get("reason", "rule")))
-            break
-    # Audit
+            if bool(rule.get("allow", True)):
+                allow_reason = str(rule.get("reason", "allow"))
+            else:
+                deny_reason = str(rule.get("reason", "deny"))
+    decision = PolicyDecision(allow=(deny_reason is None), reason=(deny_reason or allow_reason or "default allow"))
+
+    # Audit (best-effort; tables managed via Alembic)
     try:
         with SessionLocal() as db:
-            PolicyAudit.__table__.create(bind=db.get_bind(), checkfirst=True)
             db.add(
                 PolicyAudit(
                     tenant_id=tenant_id or None,

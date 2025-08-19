@@ -3,10 +3,15 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from pgvector.sqlalchemy import Vector
+try:
+    from pgvector.sqlalchemy import Vector as _Vector  # type: ignore
+    _HAS_VECTOR = True
+except Exception:
+    _Vector = None  # type: ignore
+    _HAS_VECTOR = False
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, Index, UniqueConstraint, Float
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, deferred
 
 
 class Base(DeclarativeBase):
@@ -125,7 +130,8 @@ class TaskExecution(Base):
     success = Column(Boolean, default=True)
     error_message = Column(Text, nullable=True)
     # Approximate API cost for this task in cents (computed from provider/token map)
-    cost_cents = Column(Integer, nullable=True)
+    # Deferred to avoid selecting when column is missing in older local DBs
+    cost_cents = deferred(Column(Integer, nullable=True))
     task_data = Column(Text, nullable=True)  # JSON string for additional data
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
@@ -291,7 +297,8 @@ class LongTermMemory(Base):
     content = Column(Text, nullable=False)
     # Python attribute `meta` maps to DB column name 'metadata' to avoid Base.metadata clash
     meta = Column("metadata", JSONB, nullable=False, default=dict)
-    embedding: Any = Column(Vector(1536))
+    # Use pgvector when available; fallback to JSONB for portability in dev/test
+    embedding: Any = Column(JSONB if not _HAS_VECTOR else _Vector(1536))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at = Column(
         DateTime(timezone=True),
@@ -302,6 +309,48 @@ class LongTermMemory(Base):
     def __repr__(self) -> str:
         return f"<LongTermMemory(id={self.id})>"
 
+
+class MemEvent(Base):
+    """Raw memory events captured for an employee.
+
+    Examples: task runs, tool outputs, user feedback. Stores embedding for ANN search.
+    """
+
+    __tablename__ = "mem_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), ForeignKey("tenants.id"), nullable=False, index=True)
+    employee_id = Column(String(100), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(50), nullable=False, default="task")  # task|tool|note|feedback
+    content = Column(Text, nullable=False)
+    # Python attribute `meta` maps to DB column name 'metadata' to avoid Base.metadata clash
+    meta = Column("metadata", JSONB, nullable=True)
+    embedding = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+
+    __table_args__ = (
+        Index("ix_mem_event_tenant_emp_created", "tenant_id", "employee_id", "created_at"),
+    )
+
+
+class MemFact(Base):
+    """Summarized atomic facts distilled from events with embeddings for semantic search."""
+
+    __tablename__ = "mem_facts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(100), ForeignKey("tenants.id"), nullable=False, index=True)
+    employee_id = Column(String(100), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_event_id = Column(Integer, ForeignKey("mem_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    fact = Column(Text, nullable=False)
+    # Python attribute `meta` maps to DB column name 'metadata' to avoid Base.metadata clash
+    meta = Column("metadata", JSONB, nullable=True)
+    embedding = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+
+    __table_args__ = (
+        Index("ix_mem_fact_tenant_emp_created", "tenant_id", "employee_id", "created_at"),
+    )
 
 class AuditLog(Base):
     """Audit log of API actions for basic compliance and debugging."""

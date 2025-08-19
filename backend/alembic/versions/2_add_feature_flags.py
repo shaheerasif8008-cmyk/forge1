@@ -1,7 +1,7 @@
 """add feature flags table
 
 Revision ID: 2_add_feature_flags
-Revises: 1_add_tenant_and_fk
+Revises: 0002_core_tables
 Create Date: 2025-08-11 00:00:00
 """
 
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "2_add_feature_flags"
-down_revision: Union[str, None] = "0001_tenant"
+down_revision: Union[str, None] = "0002_core_tables"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

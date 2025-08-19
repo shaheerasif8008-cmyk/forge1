@@ -11,7 +11,6 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
-from pgvector.sqlalchemy import Vector
 
 
 # revision identifiers, used by Alembic.
@@ -22,26 +21,37 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Enable pgvector extension
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-
-    # Create long_term_memory table
-    op.create_table(
-        "long_term_memory",
-        sa.Column("id", sa.String(length=100), primary_key=True),
-        sa.Column("content", sa.Text, nullable=False),
-        sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("embedding", Vector(1536)),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
-    )
-
-    # Optional vector index (cosine). Parameterize via env VAR LTM_IVFFLAT_LISTS, default 100.
-    import os
-    lists = os.getenv("LTM_IVFFLAT_LISTS", "100")
+    # Best-effort: enable pgvector extension, ignore permission errors
     op.execute(
-        f"CREATE INDEX IF NOT EXISTS ix_ltm_embedding ON long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
+        """
+        DO $$
+        BEGIN
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS vector;
+            EXCEPTION WHEN OTHERS THEN
+                -- insufficient privilege or other error; proceed without vector
+                NULL;
+            END;
+        END$$;
+        """
     )
+
+    # Create long_term_memory table if not exists
+    # Use JSONB for embedding to avoid requiring pgvector in non-privileged envs
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if "long_term_memory" not in insp.get_table_names():
+        op.create_table(
+            "long_term_memory",
+            sa.Column("id", sa.String(length=100), primary_key=True),
+            sa.Column("content", sa.Text, nullable=False),
+            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("embedding", JSONB, nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+        )
+
+    # Skip vector index by default; can be added by a later optional migration
 
 
 def downgrade() -> None:

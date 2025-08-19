@@ -37,7 +37,11 @@ class WebScraper(BaseTool):
         if not url:
             raise ValueError("url is required")
         # Egress + SSRF + HTTPS-only
-        validate_egress_url(url)
+        try:
+            validate_egress_url(url)
+        except Exception as e:
+            logger.warning("WebScraper egress validation failed", extra={"url": url, "reason": str(e)})
+            raise
         if url.startswith("http://"):
             raise ValueError("HTTP is disabled for web_scraper; use HTTPS")
         # Policy evaluation
@@ -45,9 +49,6 @@ class WebScraper(BaseTool):
         decision = policy_evaluate("tool:web_scraper", "execute", {"tenant_id": tenant_id, "url": url})
         if not decision.allow:
             raise RuntimeError(f"policy deny: {decision.reason}")
-<<<<<<< Current (Your changes)
-        # validate_egress_url already resolves and blocks private ranges
-=======
         # SSRF guard: resolve host to ensure not private/link-local/loopback with short DNS timeout
         parsed = urlparse(url)
         host = parsed.hostname or ""
@@ -58,7 +59,8 @@ class WebScraper(BaseTool):
             socket.setdefaulttimeout(None)  # Reset to default
         except Exception as e:  # noqa: BLE001
             socket.setdefaulttimeout(None)  # Ensure timeout is reset
-            raise ValueError("Unable to resolve host for SSRF checks") from e
+            logger.error("WebScraper SSRF DNS resolve error", exc_info=e)
+            raise ValueError("Unable to resolve host for SSRF checks")
         for _, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
             try:
@@ -67,14 +69,11 @@ class WebScraper(BaseTool):
                 if ip.is_private or ip.is_loopback or ip.is_link_local:
                     raise ValueError("Blocked private address")
                 # Block IPv6 ULA (fc00::/7) - Unique Local Addresses
-                if ip.version == 6:
-                    if isinstance(ip, ipaddress.IPv6Address):
-                        # fc00::/7 includes fc00:: to fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-                        if ip.packed[0] & 0xfe == 0xfc:
-                            raise ValueError("Blocked IPv6 ULA address")
+                if ip.version == 6 and isinstance(ip, ipaddress.IPv6Address):
+                    if ip.packed[0] & 0xfe == 0xfc:
+                        raise ValueError("Blocked IPv6 ULA address")
             except ValueError:
                 continue
->>>>>>> Incoming (Background Agent changes)
         # Ensure BeautifulSoup is available
         try:
             from bs4 import BeautifulSoup as _BeautifulSoup  # type: ignore
@@ -124,7 +123,7 @@ class WebScraper(BaseTool):
                 raise RuntimeError("sandbox timeout")
 
         with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            logger.info("Tool web_scraper fetching URL")
+            logger.info("Tool web_scraper fetching URL", extra={"url": url})
             if hasattr(client, "stream"):
                 with client.stream("GET", url) as resp:
                     resp.raise_for_status()
@@ -177,6 +176,11 @@ class WebScraper(BaseTool):
             if tenant_id:
                 ms = MetricsService()
                 ms.incr_tool_call(tenant_id=tenant_id, employee_id=employee_id)
+                try:
+                    from ...telemetry.prom_metrics import incr_tool_call as pm_incr
+                    pm_incr(tenant_id, employee_id)
+                except Exception:
+                    pass
                 try:
                     with SessionLocal() as db:
                         ms.rollup_tool_call(db, tenant_id=tenant_id, employee_id=employee_id)

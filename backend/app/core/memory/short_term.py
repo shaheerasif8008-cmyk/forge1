@@ -282,9 +282,14 @@ class ShortTermMemory:
 
     async def close(self) -> None:
         """Close Redis connection."""
-        if self._client:
+        if self._client is not None:
             try:
-                await self._client.close()
+                # AsyncRedis has .close() coroutine; plain client uses .close() sync
+                close_fn = getattr(self._client, "close", None)
+                if callable(close_fn):
+                    res = close_fn()
+                    if hasattr(res, "__await__"):
+                        await res  # type: ignore[func-returns-value]
                 logger.info("Redis connection closed")
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Error closing Redis connection: {e}")
@@ -299,7 +304,6 @@ class ShortTermMemory:
         """
         try:
             client = await self._get_client()
-            await client.ping()
 
             # Get Redis info
             info = await client.info()

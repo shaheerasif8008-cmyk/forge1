@@ -23,7 +23,7 @@ def upgrade() -> None:
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
 
-    if "employee_keys" not in tables:
+    if "employees" in tables and "employee_keys" not in tables:
         op.create_table(
             "employee_keys",
             sa.Column("id", sa.String(length=36), primary_key=True),
@@ -39,9 +39,10 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["employee_id"], ["employees.id"], name="fk_empkey_employee", ondelete="CASCADE"),
         )
     # Ensure index exists
-    existing_indexes = {ix["name"] for ix in inspector.get_indexes("employee_keys")} if "employee_keys" in tables else set()
-    if "ix_employee_keys_tenant_employee" not in existing_indexes:
-        op.create_index("ix_employee_keys_tenant_employee", "employee_keys", ["tenant_id", "employee_id"], unique=False)
+    if "employee_keys" in tables:
+        existing_indexes = {ix["name"] for ix in inspector.get_indexes("employee_keys")} 
+        if "ix_employee_keys_tenant_employee" not in existing_indexes:
+            op.create_index("ix_employee_keys_tenant_employee", "employee_keys", ["tenant_id", "employee_id"], unique=False)
 
 
 def downgrade() -> None:

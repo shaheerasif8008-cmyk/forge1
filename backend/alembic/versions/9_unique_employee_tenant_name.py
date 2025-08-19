@@ -18,15 +18,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index(
-        "uq_employees_tenant_name",
-        "employees",
-        ["tenant_id", "name"],
-        unique=True,
-    )
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if "employees" in insp.get_table_names():
+        try:
+            op.create_index(
+                "uq_employees_tenant_name",
+                "employees",
+                ["tenant_id", "name"],
+                unique=True,
+            )
+        except Exception:
+            pass
 
 
 def downgrade() -> None:
-    op.drop_index("uq_employees_tenant_name", table_name="employees")
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if "employees" in insp.get_table_names():
+        try:
+            op.drop_index("uq_employees_tenant_name", table_name="employees")
+        except Exception:
+            pass
 
 

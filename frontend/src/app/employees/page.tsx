@@ -33,7 +33,7 @@ export default function EmployeesPage() {
 
   const createMutation = useMutation({
     mutationFn: async (values: FormValues) => {
-      const payload: EmployeeIn = { ...values, tools: [] };
+      const payload: EmployeeIn = { ...values, tools: ["api_caller"] };
       return apiClient.createEmployee(payload);
     },
     onSuccess: (emp) => {
@@ -75,7 +75,7 @@ export default function EmployeesPage() {
           <CardTitle>Create Employee</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <form onSubmit={form.handleSubmit(onSubmit)} className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="create-employee-form">
             <div>
               <Label htmlFor="name">Name</Label>
               <Input id="name" {...form.register("name")} placeholder="Acme Agent" />
@@ -98,7 +98,7 @@ export default function EmployeesPage() {
               )}
             </div>
             <div className="md:col-span-3">
-              <Button type="submit" disabled={createMutation.isPending}>Create</Button>
+              <Button type="submit" disabled={createMutation.isPending} data-testid="create-employee">Create</Button>
             </div>
           </form>
         </CardContent>
@@ -109,35 +109,37 @@ export default function EmployeesPage() {
           <CardTitle>All Employees</CardTitle>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
-          ) : !employees?.length ? (
-            <div className="text-sm text-muted-foreground">No employees yet</div>
-          ) : (
-            <div className="space-y-2">
-              {employees.map((e: EmployeeOut) => (
-                <div key={e.id} className="flex items-center justify-between border rounded-md p-3">
-                  <div>
-                    <div className="font-medium">
-                      <Link href={`/employees/${e.id}`} className="underline hover:no-underline">{e.name}</Link>
+          <div data-testid="employee-list-container">
+            {isLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
+              </div>
+            ) : !employees?.length ? (
+              <div className="text-sm text-muted-foreground" data-testid="employee-list-empty">No employees yet</div>
+            ) : (
+              <div className="space-y-2" data-testid="employee-list">
+                {employees.map((e: EmployeeOut) => (
+                  <div key={e.id} className="flex items-center justify-between border rounded-md p-3">
+                    <div>
+                      <div className="font-medium">
+                        <Link href={`/employees/${e.id}`} className="underline hover:no-underline" data-testid="employee-link">{e.name}</Link>
+                      </div>
+                      <div className="text-xs text-muted-foreground">{e.id}</div>
                     </div>
-                    <div className="text-xs text-muted-foreground">{e.id}</div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => navigator.clipboard.writeText(e.id).then(() => toast.success("Copied ID"))}
+                      >Copy ID</Button>
+                      <Button variant="destructive" onClick={() => deleteMutation.mutate(e.id)}>Delete</Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => navigator.clipboard.writeText(e.id).then(() => toast.success("Copied ID"))}
-                    >Copy ID</Button>
-                    <Button variant="destructive" onClick={() => deleteMutation.mutate(e.id)}>Delete</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>

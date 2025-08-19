@@ -122,6 +122,12 @@ class MetricsService:
                         data={"reason": "llm_error"},
                     )
             _asyncio.create_task(_emit())
+            # Prom metrics counters
+            try:
+                from .prom_metrics import add_tokens_used
+                add_tokens_used(m.tenant_id, m.employee_id, int(m.tokens_used))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -151,9 +157,6 @@ class MetricsService:
         """Upsert daily aggregates for a completed task."""
         day = self._today()
         try:
-            # Ensure table exists (safe in dev/CI)
-            DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
-
             row = (
                 db.query(DailyUsageMetric)
                 .filter(
@@ -220,7 +223,6 @@ class MetricsService:
         try:
             from ...db.models import PerformanceSnapshot
 
-            PerformanceSnapshot.__table__.create(bind=db.get_bind(), checkfirst=True)
             row = PerformanceSnapshot(
                 employee_id=employee_id,
                 employee_version_id=employee_version_id,
@@ -243,7 +245,6 @@ class MetricsService:
     def rollup_tool_call(self, db: Session, tenant_id: str, employee_id: str | None) -> None:
         day = self._today()
         try:
-            DailyUsageMetric.__table__.create(bind=db.get_bind(), checkfirst=True)
             row = (
                 db.query(DailyUsageMetric)
                 .filter(

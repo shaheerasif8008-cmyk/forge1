@@ -23,8 +23,8 @@ class RolloutState(Base):
 
 
 def _ensure_table() -> None:
-    # Create table if missing (useful in dev/local tests)
-    RolloutState.__table__.create(bind=engine, checkfirst=True)
+    # Tables are managed by Alembic; assume present
+    return
 
 
 def _get_or_init(db: Session) -> RolloutState:

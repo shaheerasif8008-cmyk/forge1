@@ -81,6 +81,27 @@ export interface EmployeePerformanceOut {
   tool_calls: number;
 }
 
+export type MemorySearchResult = {
+  events: Array<{ id: number; kind: string; content: string; metadata?: Record<string, unknown>; score: number }>;
+  facts: Array<{ id: number; fact: string; metadata?: Record<string, unknown>; source_event_id?: number | null; score: number }>;
+};
+
+export type ToolCall = {
+  name: string;
+  duration_ms?: number | null;
+  status?: string | null;
+  input?: Record<string, unknown> | null;
+  output?: Record<string, unknown> | null;
+};
+
+export type TaskTrace = {
+  task_id: number;
+  model_used?: string | null;
+  success: boolean;
+  execution_time?: number | null;
+  tool_calls: ToolCall[];
+};
+
 // Metrics
 export interface ClientMetricsSummary {
   tasks: number;
@@ -163,6 +184,7 @@ class ApiClient {
       baseURL: defaultBase,
       headers: { "Content-Type": "application/json" },
       withCredentials: false,
+      timeout: 15000,
     });
 
     // Attach Authorization header
@@ -180,6 +202,12 @@ class ApiClient {
     this.axios.interceptors.response.use(
       (res) => res,
       async (error: AxiosError) => {
+        try {
+          if (typeof window !== "undefined") {
+            const detail = (error.response?.data as any)?.detail || error.message || `HTTP ${error.response?.status || ""}`;
+            window.dispatchEvent(new CustomEvent("forge1:api_error", { detail: { message: String(detail) } }));
+          }
+        } catch {}
         const original = (error.config ?? {}) as InternalAxiosRequestConfig & { _retry?: boolean };
         if (error.response?.status === 401 && !original._retry) {
           const refresh = this.getRefreshToken?.();
@@ -201,7 +229,12 @@ class ApiClient {
           }
           this.onUnauthorized?.();
         }
-        return Promise.reject(error);
+        // Map errors to a normalized shape
+        const mapped: ApiError = {
+          detail: (error.response?.data as any)?.detail || error.message || "Request failed",
+          status: error.response?.status,
+        };
+        return Promise.reject(mapped);
       }
     );
   }
@@ -296,16 +329,51 @@ class ApiClient {
     return data;
   }
 
-  // Metrics
-  async getClientMetricsSummary(hours = 24): Promise<ClientMetricsSummary> {
-    const { data } = await this.axios.get<ClientMetricsSummary>("/api/v1/client/metrics/summary", {
-      params: { hours },
-    });
+  // Memory APIs
+  async addEmployeeMemory(employeeId: string, content: string, kind?: string, metadata?: Record<string, unknown>): Promise<{ status: string; event_id: number }> {
+    const body: Record<string, unknown> = { content };
+    if (kind) body.kind = kind;
+    if (metadata) body.metadata = metadata;
+    const { data } = await this.axios.post<{ status: string; event_id: number }>(`/api/v1/employees/${employeeId}/memory/add`, body);
     return data;
   }
 
+  async searchEmployeeMemory(employeeId: string, q: string, top_k = 5): Promise<MemorySearchResult> {
+    const { data } = await this.axios.get<MemorySearchResult>(`/api/v1/employees/${employeeId}/memory/search`, { params: { q, top_k } });
+    return data;
+  }
+
+  async getTaskTrace(taskId: number): Promise<TaskTrace> {
+    const { data } = await this.axios.get<TaskTrace>(`/api/v1/reviews/${taskId}`);
+    return data;
+  }
+
+  async updateEmployeeTools(employeeId: string, tools: any[]): Promise<EmployeeOut> {
+    const { data } = await this.axios.patch<EmployeeOut>(`/api/v1/employees/${employeeId}/tools`, { tools });
+    return data;
+  }
+
+  // Metrics
+  async getClientMetricsSummary(hours = 24): Promise<ClientMetricsSummary> {
+    try {
+      const { data } = await this.axios.get<ClientMetricsSummary>("/api/v1/client/metrics/summary", {
+        params: { hours },
+      });
+      // If totally empty, fall back to dashboard summary endpoint
+      if (!data || (typeof data.tasks === "number" && data.tasks === 0 && (!data.by_day || data.by_day.length === 0))) {
+        const fb = await this.axios.get<ClientMetricsSummary>("/api/v1/metrics/summary", { params: { hours } });
+        return fb.data;
+      }
+      return data;
+    } catch (err) {
+      // Fallback to dashboard summary endpoint if client metrics unavailable
+      const fb = await this.axios.get<ClientMetricsSummary>("/api/v1/metrics/summary", { params: { hours } });
+      return fb.data;
+    }
+  }
+
   async getActiveEmployees(minutes = 5): Promise<{ active_employees: number }> {
-    const { data } = await this.axios.get<{ active_employees: number }>("/api/v1/client/metrics/active", {
+    const { data } = await this.axios.get<{ active_employees: number }>("/api/v1/metrics/active", {
       params: { minutes },
     });
     return data;
@@ -319,7 +387,7 @@ class ApiClient {
     if (token) qp.set("token", token);
     const qs = qp.toString();
     const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy").replace(/\/$/, "");
-    return `${base}/api/v1/ai-comms/events${qs ? `?${qs}` : ""}`;
+    return `${base}/api/v1/events${qs ? `?${qs}` : ""}`;
   }
 }
 

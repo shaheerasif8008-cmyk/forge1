@@ -10,7 +10,7 @@ from ..db.models import CanaryConfig, ShadowInvocation
 
 
 def should_shadow(db: Session, *, tenant_id: str, employee_id: str) -> tuple[bool, CanaryConfig | None]:
-    CanaryConfig.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Table managed by Alembic
     cfg = (
         db.query(CanaryConfig)
         .filter(CanaryConfig.tenant_id == tenant_id, CanaryConfig.employee_id == employee_id)
@@ -22,7 +22,7 @@ def should_shadow(db: Session, *, tenant_id: str, employee_id: str) -> tuple[boo
 
 
 def tee_and_record(db: Session, *, tenant_id: str, employee_id: str, shadow_employee_id: str, input_text: str, primary_output: str | None, shadow_output: str | None, score: float | None) -> str:
-    ShadowInvocation.__table__.create(bind=db.get_bind(), checkfirst=True)
+    # Table managed by Alembic
     corr = uuid.uuid4().hex[:16]
     row = ShadowInvocation(
         tenant_id=tenant_id,

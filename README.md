@@ -1,3 +1,26 @@
+### Admin SSE for AI Comms
+
+Stream internal events (requires admin JWT). Two auth modes supported: Authorization header or `?token=` query.
+
+Examples:
+
+```bash
+# Get a dev JWT (password is 'admin' in dev/local)
+JWT=$(curl -sS -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode 'username=admin@forge1.com' --data-urlencode 'password=admin' | jq -r .access_token)
+
+# Stream all events (text/event-stream)
+curl -N -H "Authorization: Bearer $JWT" http://localhost:8000/api/v1/admin/ai-comms/events
+
+# Or pass token via query param (useful with browser/EventSource)
+curl -N "http://localhost:8000/api/v1/admin/ai-comms/events?token=$JWT"
+
+# Filter by type or employee_id
+curl -N -H "Authorization: Bearer $JWT" \
+  'http://localhost:8000/api/v1/admin/ai-comms/events?type=employee.dry_run.completed&employee_id=abcd1234'
+```
+
 # Forge 1 - AI Orchestration Platform
 
 A modern, full-stack AI orchestration platform built with FastAPI, React, and TypeScript. Forge 1 provides intelligent task routing, session management, and a beautiful user interface for AI-powered applications.
@@ -68,14 +91,15 @@ cd forge1
 ### 2. Start the Backend
 
 ```bash
-# Start all services
-docker-compose up -d
+# Start local Postgres + Redis
+docker compose -f docker-compose.local.yml up -d
 
-# Check status
-docker-compose ps
+# Self-heal and run migrations (idempotent)
+bash scripts/audit_local.sh
 
-# View logs
-docker-compose logs -f backend
+# Start backend API
+cd backend
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 3. Start the Frontend
@@ -86,8 +110,8 @@ cd frontend
 # Install dependencies
 npm install
 
-# Set up environment
-cp env.example .env
+# Optional: environment
+cp env.local.example .env.local
 
 # Start development server
 npm run dev
@@ -98,6 +122,7 @@ npm run dev
 - **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
+- **Metrics**: http://localhost:8000/metrics
 
 ### 5. Login
 
@@ -131,9 +156,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables
-export DATABASE_URL="postgresql://forge:forge@localhost:5432/forge"
-export REDIS_URL="redis://localhost:6379/0"
+# Set environment variables (local canonical)
+export DATABASE_URL="postgresql://forge:forge@127.0.0.1:5542/forge1_local"
+export REDIS_URL="redis://127.0.0.1:6382/0"
 export JWT_SECRET="your-secret-key"
 
 # Run development server
@@ -162,14 +187,13 @@ npm run dev
 
 ```bash
 # Access PostgreSQL
-docker-compose exec postgres psql -U forge -d forge
+docker exec -it forge1_local_postgres psql -U forge -d forge1_local
 
 # Access Redis CLI
-docker-compose exec redis redis-cli
+docker compose -f docker-compose.local.yml exec redis redis-cli
 
 # Reset database
-docker-compose down -v
-docker-compose up -d
+docker compose -f docker-compose.local.yml down -v && docker compose -f docker-compose.local.yml up -d
 ```
 
 ## 📁 Project Structure
@@ -285,6 +309,89 @@ docker compose --profile prod up --build
 docker compose --profile testing -f testing-app/docker-compose.testing.yml up --build
 ```
 
+### Local Mode (no cloud)
+
+Local-first development with Postgres (pgvector) and Redis via Docker.
+
+1) Start local services
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+```
+
+2) Configure backend environment (.env)
+
+```bash
+cat > backend/.env <<'ENV'
+ENV=local
+DATABASE_URL=postgresql://forge:forge@127.0.0.1:5542/forge1_local
+REDIS_URL=redis://127.0.0.1:6382/0
+JWT_SECRET=dev-local-secret
+BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+ENV
+```
+
+2) Single-entry audit + self-heal
+
+```bash
+bash scripts/audit_local.sh
+```
+
+This script will:
+- start postgres/redis if needed
+- ensure `forge1_local` DB exists and enable `pgvector`
+- export `DATABASE_URL=postgresql+psycopg://forge:forge@127.0.0.1:5542/forge1_local`
+- run `alembic upgrade head`
+- check backend/metrics and frontend index
+
+3) Apply database migrations (manual alternative)
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+4) (Optional) Seed demo data
+
+```bash
+psql "postgresql://forge:forge@127.0.0.1:5542/forge1_local" -f ../docs/SEED_LOCAL.sql
+```
+
+5) Run backend
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+6) Frontend (Next.js)
+
+```bash
+cd frontend
+cp .env.local .env.local.bak 2>/dev/null || true
+cat > .env.local <<'ENV'
+NEXT_PUBLIC_ENV_LABEL=Local
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+ENV
+npm install
+npm run dev
+```
+
+Notes:
+- If `NEXT_PUBLIC_API_BASE_URL` is not set, the frontend uses an internal proxy at `/api/proxy/*` to forward API calls to the backend.
+
+7) Health check
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health/live
+curl http://127.0.0.1:8000/api/v1/health/ready
+```
+
+7) Quick audit
+
+```bash
+bash scripts/audit_local.sh
+```
+
 ### Environment Variables
 
 #### Backend (.env)
@@ -299,7 +406,7 @@ LOG_LEVEL=INFO
 
 #### Frontend (.env)
 ```bash
-VITE_API_URL=https://api.yourdomain.com
+VITE_API_BASE_URL=https://api.yourdomain.com
 VITE_ENVIRONMENT=production
 VITE_APP_VERSION=1.0.0
 ```

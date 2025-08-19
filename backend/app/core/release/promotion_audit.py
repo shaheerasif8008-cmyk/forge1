@@ -7,7 +7,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.db.models import Base
-from app.db.session import engine
 
 
 class PromotionAudit(Base):
@@ -22,10 +21,6 @@ class PromotionAudit(Base):
     details = Column(JSONB, nullable=True)
 
 
-def ensure_table_exists() -> None:
-    PromotionAudit.__table__.create(bind=engine, checkfirst=True)
-
-
 def write_audit(
     db: Session,
     action: str,
@@ -34,7 +29,6 @@ def write_audit(
     performed_by: str,
     details: dict | None = None,
 ) -> None:
-    ensure_table_exists()
     entry = PromotionAudit(
         action=action,
         feature=feature,

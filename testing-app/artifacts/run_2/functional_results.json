@@ -1,14 +1,34 @@
 {
   "cases": [
     {
-      "path": "/api/v1/health/live",
+      "path": "/api/v1/health/ready",
       "status": 200,
       "passed": true
     },
     {
-      "path": "/api/v1/health/ready",
-      "status": 200,
+      "path": "/api/v1/employees/",
+      "status": 201,
       "passed": true
+    },
+    {
+      "path": "/api/v1/employees/{EMP_ID}",
+      "status": 404,
+      "passed": false
+    },
+    {
+      "path": "/api/v1/employees/{EMP_ID}/run",
+      "status": 404,
+      "passed": false
+    },
+    {
+      "path": "/api/v1/employees/{EMP_ID}/memory/add",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "path": "/api/v1/employees/{EMP_ID}/memory/search?q=demo",
+      "status": 404,
+      "passed": false
     }
   ]
 }

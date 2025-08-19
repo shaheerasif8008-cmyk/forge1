@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -8,9 +6,9 @@ services:
     environment:
       POSTGRES_USER: forge
       POSTGRES_PASSWORD: forge
-      POSTGRES_DB: forge
+      POSTGRES_DB: forge1_local
     ports:
-      - "5432:5432"
+      - "5542:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +22,7 @@ services:
     container_name: forge1_local_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6382:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

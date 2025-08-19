@@ -57,6 +57,8 @@ class TaskContext(BaseModel):
     prompt_prefix: str | None = None
     prompt_variants: list[str] | None = None
     tool_strategy: dict[str, Any] | None = None
+    # Multi-role support for employee orchestrator
+    roles: list[str] | None = None
 
 
 class TaskResult(BaseModel):
@@ -467,7 +469,7 @@ class AIOrchestrator:
                     parent_span_id=None,
                     tenant_id=str((context or {}).get("tenant_id", "") or None),
                     employee_id=str((context or {}).get("employee_id", "") or None),
-                    input={"prompt": prompt_candidates[0]},
+                    input={"prompt": "***redacted***"},
                 ) as _span_ctx:
                     cached = await self.cost_router.maybe_get_cached(
                         model=selected_model.model_name,
@@ -510,7 +512,6 @@ class AIOrchestrator:
                             # Persist consensus log (best-effort)
                             try:
                                 with _SL() as _db:
-                                    ConsensusLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
                                     _db.add(
                                         ConsensusLog(
                                             tenant_id=str((context or {}).get("tenant_id", "") or None),
@@ -645,7 +646,6 @@ class AIOrchestrator:
                 from ...db.session import SessionLocal as _SL
                 from ...db.models import ModelRouteLog
                 with _SL() as _db:
-                    ModelRouteLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
                     tenant_id = str((context or {}).get("tenant_id", "")) or None
                     employee_id = str((context or {}).get("employee_id", "")) or None
                     _db.add(
@@ -782,7 +782,6 @@ class AIOrchestrator:
                 from ...db.session import SessionLocal as _SL
                 from ...db.models import ModelRouteLog
                 with _SL() as _db:
-                    ModelRouteLog.__table__.create(bind=_db.get_bind(), checkfirst=True)
                     tenant_id = str((context or {}).get("tenant_id", "")) or None
                     employee_id = str((context or {}).get("employee_id", "")) or None
                     _db.add(

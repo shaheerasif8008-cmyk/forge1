@@ -53,7 +53,7 @@ def span(
 	# persist start
 	try:
 		with SessionLocal() as db:
-			TraceSpan.__table__.create(bind=db.get_bind(), checkfirst=True)
+			# Table managed by Alembic
 			db.add(
 				TraceSpan(
 					trace_id=trace,
